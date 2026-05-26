@@ -115,8 +115,8 @@ async fn main(spawner: Spawner) -> ! {
     let (mut wifi, interfaces) = esp_radio::wifi::new(radio, peripherals.WIFI, Default::default())
         .expect("Failed to initialize Wi-Fi controller");
 
-    let ssid = option_env!("SSID").unwrap();
-    let pass = option_env!("PASS").unwrap();
+    let ssid = env!("SSID");
+    let pass = env!("PASS");
 
     wifi.set_config(&wifi::ModeConfig::Client(
         wifi::ClientConfig::default()

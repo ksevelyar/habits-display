@@ -2,36 +2,26 @@ name: Continuous Integration
 
 on:
   push:
+    paths-ignore:
+      - "**/readme.md"
   pull_request:
   workflow_dispatch:
 
-env:
-  CARGO_TERM_COLOR: always
-
 jobs:
   rust-checks:
-    name: Rust Checks
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        action:
-          - command: build
-            args: --release
-          - command: fmt
-            args: --all -- --check
-          - command: clippy
-            args: --all-features --workspace -- -D warnings
+
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@v1
-        with:
-          target: riscv32imc-unknown-none-elf
-          toolchain: stable
-          components: rust-src, rustfmt, clippy
-      - name: Enable caching
-        uses: Swatinem/rust-cache@v2
-      - name: Run command
-        run: cargo ${{ matrix.action.command }} ${{ matrix.action.args }}
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@v16
+      - uses: DeterminateSystems/magic-nix-cache-action@v8
+
+      - name: Build
+        run: nix develop --command cargo build --release
+
+      - name: Format check
+        run: nix develop --command cargo fmt --all -- --check --color always
+
+      - name: Clippy
+        run: nix develop --command cargo clippy --all-features --workspace -- -D warnings
