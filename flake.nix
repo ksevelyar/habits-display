@@ -31,6 +31,7 @@
               extensions = ["rust-src"];
               targets = [ "riscv32imc-unknown-none-elf" ];
             })
+            websocat
             probe-rs-tools
             esp-generate
             rust-analyzer
