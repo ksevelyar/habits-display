@@ -52,6 +52,7 @@ async fn connect_and_read(stack: Stack<'_>) {
 
     let mut buf = [0u8; 512];
     let mut pos = 0;
+    let mut headers_end = 0;
     loop {
         let n = match socket.read(&mut buf[pos..]).await {
             Ok(0) => break,
@@ -62,7 +63,8 @@ async fn connect_and_read(stack: Stack<'_>) {
             }
         };
         pos += n;
-        if pos >= 4 && buf[pos - 4..pos] == *b"\r\n\r\n" {
+        if let Some(idx) = buf[..pos].windows(4).position(|w| w == b"\r\n\r\n") {
+            headers_end = idx + 4;
             break;
         }
         if pos >= buf.len() {
@@ -70,7 +72,7 @@ async fn connect_and_read(stack: Stack<'_>) {
         }
     }
 
-    let resp = core::str::from_utf8(&buf[..pos]).unwrap_or("???");
+    let resp = core::str::from_utf8(&buf[..headers_end]).unwrap_or("???");
     rprintln!("ws: resp = {}", resp);
 
     if !resp.contains(" 101 ") {
@@ -79,41 +81,49 @@ async fn connect_and_read(stack: Stack<'_>) {
     }
     rprintln!("ws: handshake ok");
 
-    let mut frame = [0u8; 128];
-    let n = match embassy_time::with_timeout(Duration::from_secs(10), socket.read(&mut frame)).await
-    {
-        Ok(Ok(n)) if n > 0 => n,
-        _ => {
-            rprintln!("ws: frame timeout/error");
-            return;
-        }
+    let mut read_buf = [0u8; 128];
+
+    let data = if pos > headers_end {
+        &buf[headers_end..pos]
+    } else {
+        let n =
+            match embassy_time::with_timeout(Duration::from_secs(10), socket.read(&mut read_buf))
+                .await
+            {
+                Ok(Ok(n)) if n > 0 => n,
+                _ => {
+                    rprintln!("ws: frame timeout/error");
+                    return;
+                }
+            };
+        &read_buf[..n]
     };
 
-    rprintln!("ws: raw frame ({}) = {:02x?}", n, &frame[..n]);
-
-    if n < 2 {
+    if data.len() < 2 {
         rprintln!("ws: frame too short");
         return;
     }
 
-    let opcode = frame[0] & 0x0F;
-    let masked = (frame[1] & 0x80) != 0;
-    let mut len = (frame[1] & 0x7F) as usize;
+    rprintln!("ws: raw frame ({}) = {:02x?}", data.len(), data);
+
+    let opcode = data[0] & 0x0F;
+    let masked = (data[1] & 0x80) != 0;
+    let mut len = (data[1] & 0x7F) as usize;
     let mut off = 2usize;
 
     if len == 126 {
-        if n < 4 {
+        if data.len() < 4 {
             rprintln!("ws: short ext len");
             return;
         }
-        len = u16::from_be_bytes([frame[2], frame[3]]) as usize;
+        len = u16::from_be_bytes([data[2], data[3]]) as usize;
         off = 4;
     } else if len == 127 {
-        if n < 10 {
+        if data.len() < 10 {
             rprintln!("ws: short ext len 64");
             return;
         }
-        len = u64::from_be_bytes(frame[2..10].try_into().unwrap()) as usize;
+        len = u64::from_be_bytes(data[2..10].try_into().unwrap()) as usize;
         off = 10;
     }
 
@@ -121,12 +131,17 @@ async fn connect_and_read(stack: Stack<'_>) {
         off += 4;
     }
 
-    if off + len > n {
-        rprintln!("ws: frame truncated (off={} len={} n={})", off, len, n);
+    if off + len > data.len() {
+        rprintln!(
+            "ws: frame truncated (off={} len={} n={})",
+            off,
+            len,
+            data.len()
+        );
         return;
     }
 
-    let payload = &frame[off..off + len];
+    let payload = &data[off..off + len];
 
     match opcode {
         1 => {
