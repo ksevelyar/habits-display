@@ -68,7 +68,7 @@ async fn process_frame(data: &[u8]) -> Result<(), ()> {
     match opcode {
         1 => {
             if let Ok(msg) = core::str::from_utf8(payload) {
-                rprintln!("ws: msg = {}", msg);
+                rprintln!("ws: {}", msg);
             } else {
                 rprintln!("ws: binary = {:02x?}", payload);
             }
@@ -102,7 +102,9 @@ async fn connect_and_read(stack: Stack<'_>) {
 
     let request = concat!(
         "GET /websocket/notifications HTTP/1.1\r\n",
-        "Host: 192.168.1.13:3003\r\n",
+        "Host: ",
+        env!("NOTIFICATIONS_HOST"),
+        "\r\n",
         "Upgrade: websocket\r\n",
         "Connection: Upgrade\r\n",
         "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n",
@@ -181,12 +183,6 @@ async fn connect_and_read(stack: Stack<'_>) {
                 break;
             }
         }
-
-        rprintln!(
-            "ws: raw frame ({}) = {:02x?}",
-            frame_pos,
-            &frame_buf[..frame_pos]
-        );
 
         if process_frame(&frame_buf[..frame_pos]).await.is_err() {
             return;
