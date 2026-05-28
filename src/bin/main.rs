@@ -65,8 +65,21 @@ async fn main(spawner: Spawner) -> ! {
     spawner.spawn(wifi::task(controller, stack)).ok();
     spawner.spawn(ntp::task(stack)).ok();
     spawner.spawn(websocket::task(stack)).ok();
+    spawner.spawn(clock_display()).ok();
 
     loop {
         Timer::after(Duration::from_secs(3600)).await;
+    }
+}
+
+#[embassy_executor::task]
+async fn clock_display() -> ! {
+    loop {
+        Timer::after(Duration::from_secs(60)).await;
+        if let Some((h, m, s)) = ntp::current_moscow_hms() {
+            rprintln!("clock: {:02}:{:02}:{:02} MSK", h, m, s);
+        } else {
+            rprintln!("clock: not synced");
+        }
     }
 }

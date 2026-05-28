@@ -25,12 +25,21 @@
           SSID = "ssid";
           PASS = "pass";
           UTC_OFFSET = "180";
+          JWT_TOKEN = "very secret";
 
           buildInputs = with pkgs; [
             (rust-bin.nightly.latest.default.override {
               extensions = ["rust-src"];
-              targets = [ "riscv32imc-unknown-none-elf" ];
+              targets = ["riscv32imc-unknown-none-elf"];
             })
+
+            (writeShellScriptBin "ci" ''
+              set -euo pipefail
+              cargo build --release
+              cargo fmt --all -- --check --color always
+              cargo clippy --all-features --workspace -- -D warnings
+            '')
+
             websocat
             probe-rs-tools
             esp-generate

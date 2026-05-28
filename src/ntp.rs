@@ -1,6 +1,8 @@
+use core::cell::Cell;
+use critical_section::Mutex;
 use embassy_net::Stack;
 use embassy_net::udp::{PacketMetadata, UdpSocket};
-use embassy_time::{Duration, Timer};
+use embassy_time::{Duration, Instant, Timer};
 use rtt_target::rprintln;
 
 #[embassy_executor::task]
@@ -16,14 +18,40 @@ pub async fn task(stack: Stack<'static>) -> ! {
 
     loop {
         match fetch(stack).await {
-            Some((h, m, s)) => rprintln!("ntp: time = {:02}:{:02}:{:02}", h, m, s),
+            Some(secs) => {
+                let now = Instant::now();
+                critical_section::with(|cs| {
+                    NTP_SECS.borrow(cs).replace(Some(secs));
+                    NTP_INSTANT.borrow(cs).replace(Some(now));
+                });
+                rprintln!("ntp: synced, unix = {}", secs);
+            }
             None => rprintln!("ntp: fetch failed"),
         }
-        Timer::after(Duration::from_secs(3600)).await;
+        Timer::after(Duration::from_secs(86400)).await;
     }
 }
 
-async fn fetch(stack: Stack<'_>) -> Option<(u8, u8, u8)> {
+pub fn current_moscow_hms() -> Option<(u8, u8, u8)> {
+    let secs = current_unix_secs()?;
+    let msk = secs + 3 * 3600;
+    let t = msk % 86400;
+    Some(((t / 3600) as u8, ((t % 3600) / 60) as u8, (t % 60) as u8))
+}
+
+fn current_unix_secs() -> Option<u64> {
+    critical_section::with(|cs| {
+        let base = NTP_SECS.borrow(cs).get()?;
+        let instant = NTP_INSTANT.borrow(cs).get()?;
+        let elapsed = Instant::now().saturating_duration_since(instant).as_secs();
+        Some(base + elapsed)
+    })
+}
+
+static NTP_SECS: Mutex<Cell<Option<u64>>> = Mutex::new(Cell::new(None));
+static NTP_INSTANT: Mutex<Cell<Option<Instant>>> = Mutex::new(Cell::new(None));
+
+async fn fetch(stack: Stack<'_>) -> Option<u64> {
     rprintln!("ntp: start");
 
     let mut rx_meta = [PacketMetadata::EMPTY; 1];
@@ -71,10 +99,9 @@ async fn fetch(stack: Stack<'_>) -> Option<(u8, u8, u8)> {
     let secs = u32::from_be_bytes([resp[40], resp[41], resp[42], resp[43]]);
     rprintln!("ntp: raw secs = {}", secs);
 
-    let unix = secs.wrapping_sub(2_208_988_800);
-    let t = unix % 86400;
+    let unix = secs.wrapping_sub(2_208_988_800) as u64;
 
     rprintln!("ntp: done");
 
-    Some(((t / 3600) as u8, ((t % 3600) / 60) as u8, (t % 60) as u8))
+    Some(unix)
 }

@@ -22,6 +22,69 @@ pub async fn task(stack: Stack<'static>) -> ! {
     }
 }
 
+async fn process_frame(data: &[u8]) -> Result<(), ()> {
+    if data.len() < 2 {
+        rprintln!("ws: frame too short");
+        return Err(());
+    }
+
+    let opcode = data[0] & 0x0F;
+    let masked = (data[1] & 0x80) != 0;
+    let mut len = (data[1] & 0x7F) as usize;
+    let mut off = 2usize;
+
+    if len == 126 {
+        if data.len() < 4 {
+            rprintln!("ws: short ext len");
+            return Err(());
+        }
+        len = u16::from_be_bytes([data[2], data[3]]) as usize;
+        off = 4;
+    } else if len == 127 {
+        if data.len() < 10 {
+            rprintln!("ws: short ext len 64");
+            return Err(());
+        }
+        len = u64::from_be_bytes(data[2..10].try_into().unwrap()) as usize;
+        off = 10;
+    }
+
+    if masked {
+        off += 4;
+    }
+
+    if off + len > data.len() {
+        rprintln!(
+            "ws: frame truncated (off={} len={} n={})",
+            off,
+            len,
+            data.len()
+        );
+        return Err(());
+    }
+
+    let payload = &data[off..off + len];
+
+    match opcode {
+        1 => {
+            if let Ok(msg) = core::str::from_utf8(payload) {
+                rprintln!("ws: msg = {}", msg);
+            } else {
+                rprintln!("ws: binary = {:02x?}", payload);
+            }
+        }
+        8 => {
+            rprintln!("ws: close frame");
+            return Err(());
+        }
+        9 => rprintln!("ws: ping"),
+        10 => rprintln!("ws: pong"),
+        _ => rprintln!("ws: unknown opcode {}", opcode),
+    }
+
+    Ok(())
+}
+
 async fn connect_and_read(stack: Stack<'_>) {
     let mut rx_buf = [0u8; 4096];
     let mut tx_buf = [0u8; 1024];
@@ -36,13 +99,20 @@ async fn connect_and_read(stack: Stack<'_>) {
     }
 
     rprintln!("ws: connected");
-    let request = b"GET /websocket/notifications HTTP/1.1\r\n\
-                     Host: 192.168.1.13:3003\r\n\
-                     Upgrade: websocket\r\n\
-                     Connection: Upgrade\r\n\
-                     Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
-                     Sec-WebSocket-Version: 13\r\n\
-                     \r\n";
+
+    let request = concat!(
+        "GET /websocket/notifications HTTP/1.1\r\n",
+        "Host: 192.168.1.13:3003\r\n",
+        "Upgrade: websocket\r\n",
+        "Connection: Upgrade\r\n",
+        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n",
+        "Sec-WebSocket-Version: 13\r\n",
+        "Authorization: Bearer ",
+        env!("JWT_TOKEN"),
+        "\r\n",
+        "\r\n",
+    )
+    .as_bytes();
 
     if socket.write_all(request).await.is_err() {
         rprintln!("ws: send failed");
@@ -81,78 +151,45 @@ async fn connect_and_read(stack: Stack<'_>) {
     }
     rprintln!("ws: handshake ok");
 
-    let mut read_buf = [0u8; 128];
-
-    let data = if pos > headers_end {
+    let leftover = if pos > headers_end {
         &buf[headers_end..pos]
     } else {
-        let n =
-            match embassy_time::with_timeout(Duration::from_secs(10), socket.read(&mut read_buf))
-                .await
-            {
-                Ok(Ok(n)) if n > 0 => n,
-                _ => {
-                    rprintln!("ws: frame timeout/error");
-                    return;
-                }
-            };
-        &read_buf[..n]
+        &[]
     };
 
-    if data.len() < 2 {
-        rprintln!("ws: frame too short");
+    if !leftover.is_empty() && process_frame(leftover).await.is_err() {
         return;
     }
 
-    rprintln!("ws: raw frame ({}) = {:02x?}", data.len(), data);
+    loop {
+        let mut frame_buf = [0u8; 2048];
+        let mut frame_pos = 0usize;
 
-    let opcode = data[0] & 0x0F;
-    let masked = (data[1] & 0x80) != 0;
-    let mut len = (data[1] & 0x7F) as usize;
-    let mut off = 2usize;
-
-    if len == 126 {
-        if data.len() < 4 {
-            rprintln!("ws: short ext len");
-            return;
-        }
-        len = u16::from_be_bytes([data[2], data[3]]) as usize;
-        off = 4;
-    } else if len == 127 {
-        if data.len() < 10 {
-            rprintln!("ws: short ext len 64");
-            return;
-        }
-        len = u64::from_be_bytes(data[2..10].try_into().unwrap()) as usize;
-        off = 10;
-    }
-
-    if masked {
-        off += 4;
-    }
-
-    if off + len > data.len() {
-        rprintln!(
-            "ws: frame truncated (off={} len={} n={})",
-            off,
-            len,
-            data.len()
-        );
-        return;
-    }
-
-    let payload = &data[off..off + len];
-
-    match opcode {
-        1 => {
-            if let Ok(msg) = core::str::from_utf8(payload) {
-                rprintln!("ws: msg = {}", msg);
-            } else {
-                rprintln!("ws: binary = {:02x?}", payload);
+        loop {
+            match socket.read(&mut frame_buf[frame_pos..]).await {
+                Ok(0) => {
+                    rprintln!("ws: connection closed");
+                    return;
+                }
+                Ok(n) => frame_pos += n,
+                Err(_) => {
+                    rprintln!("ws: read error");
+                    return;
+                }
+            }
+            if frame_pos > 0 {
+                break;
             }
         }
-        8 => rprintln!("ws: close frame"),
-        9 | 10 => rprintln!("ws: ping/pong"),
-        _ => rprintln!("ws: unknown opcode {}", opcode),
+
+        rprintln!(
+            "ws: raw frame ({}) = {:02x?}",
+            frame_pos,
+            &frame_buf[..frame_pos]
+        );
+
+        if process_frame(&frame_buf[..frame_pos]).await.is_err() {
+            return;
+        }
     }
 }
