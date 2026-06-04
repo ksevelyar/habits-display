@@ -1,45 +1,60 @@
 [package]
 edition      = "2024"
 name         = "habits-display"
-rust-version = "1.88"
+rust-version = "1.96"
 version      = "0.1.0"
 
 [[bin]]
 name = "habits-display"
 path = "./src/bin/main.rs"
+test = false
+
+[[test]]
+harness = false
+name    = "hello_test"
+
+[lib]
+test = false
 
 [dependencies]
-esp-hal = { version = "=1.0.0", features = ["esp32c3", "unstable"] }
-esp-rtos = { version = "0.2.0", features = [
+esp-hal = { version = "~1.1.0", features = ["defmt", "esp32c3", "unstable"] }
+
+esp-rtos = { version = "0.3.0", features = [
+  "defmt",
   "embassy",
   "esp-alloc",
   "esp-radio",
   "esp32c3",
 ] }
 
-esp-bootloader-esp-idf = { version = "0.4.0", features = ["esp32c3"] }
+defmt                  = "1.0.1"
+esp-bootloader-esp-idf = { version = "0.5.0", features = ["defmt", "esp32c3"] }
 
-embassy-net = { version = "0.7.1", features = [
+embassy-net = { version = "0.9.1", features = [
+  "defmt",
   "dhcpv4",
   "medium-ethernet",
   "tcp",
   "udp",
+  "dns"
 ] }
-embedded-io = "0.7.1"
-embedded-io-async = "0.6.1"
-esp-alloc = "0.9.0"
-rtt-target = "0.6.2"
+embedded-io = { version = "0.7.1", features = ["defmt"] }
+embedded-io-async = { version = "0.7.0", features = ["defmt"] }
+esp-alloc = { version = "0.10.0", features = ["defmt"] }
+panic-rtt-target = { version = "0.2.0", features = ["defmt"] }
+rtt-target = { version = "0.6.2", features = ["defmt"] }
 # for more networking protocol support see https://crates.io/crates/edge-net
-embassy-executor = { version = "0.9.1", features = [] }
-embassy-time = "0.5.0"
-esp-radio = { version = "0.17.0", features = [
+embassy-executor = { version = "0.10.0", features = ["defmt"] }
+embassy-time = { version = "0.5.0", features = ["defmt"] }
+esp-radio = { version = "0.18.0", features = [
+  "defmt",
   "esp-alloc",
   "esp32c3",
-  "smoltcp",
   "unstable",
   "wifi",
 ] }
-smoltcp = { version = "0.12.0", default-features = false, features = [
+smoltcp = { version = "0.13.0", default-features = false, features = [
+  "defmt",
   "medium-ethernet",
   "multicast",
   "proto-dhcpv4",
@@ -53,18 +68,32 @@ smoltcp = { version = "0.12.0", default-features = false, features = [
 ] }
 
 critical-section = "1.2.0"
-static_cell      = "2.1.1"
+static_cell      = {version = "2.1.1", features = ["nightly"]}
 
+sntpc = { version = "0.9", default-features = false }
+sntpc-net-embassy = { version = "0.9", default-features = false }
+
+edge-ws = { version = "0.7", default-features = false, features = ["io", "defmt"] }
+
+[patch.crates-io]
+# NOTE: https://github.com/GnomedDev/proc-macro-error-2/pull/14
+proc-macro-error2 = { git = "https://github.com/fgardt/proc-macro-error-2", branch = "fix/future-incompat" }
+
+[dev-dependencies]
+embedded-test = { version = "0.7.1", features = [
+  "defmt",
+  "embassy-010",
+  "external-executor",
+] }
+
+# For fine tuning these settings, please refer to https://doc.rust-lang.org/cargo/reference/profiles.html
 [profile.dev]
-# Rust debug is too slow.
-# For debug builds always builds with some optimization
+# The default debug profile is too slow and too big for resource-constrained devices.
+# Always build with some optimizations enabled.
 opt-level = "s"
 
 [profile.release]
-codegen-units    = 1     # LLVM can perform better optimizations using a single thread
-debug            = 2
-debug-assertions = false
-incremental      = false
-lto              = 'fat'
-opt-level        = 's'
-overflow-checks  = false
+codegen-units = 1     # LLVM can perform better optimizations using a single thread
+debug         = 2     # prefer slower builds but better debugging experience
+lto           = 'fat'
+opt-level     = 's'
