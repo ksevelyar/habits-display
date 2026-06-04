@@ -1,105 +1,94 @@
+use core::str;
+
+use defmt::{error, info};
+use edge_ws::{FrameHeader, FrameType};
 use embassy_net::Stack;
+use embassy_net::dns::DnsQueryType;
 use embassy_net::tcp::TcpSocket;
-use embassy_time::{Duration, Timer};
+use embassy_time::{Duration, Timer, with_timeout};
 use embedded_io_async::Write;
-use rtt_target::rprintln;
 
 #[embassy_executor::task]
 pub async fn task(stack: Stack<'static>) -> ! {
-    rprintln!("ws: waiting for network...");
-    loop {
-        if stack.config_v4().is_some() {
-            break;
-        }
-        Timer::after(Duration::from_millis(500)).await;
-    }
-    rprintln!("ws: network ready");
+    stack.wait_config_up().await;
+    info!("ws: network ready");
 
     loop {
-        connect_and_read(stack).await;
-        rprintln!("ws: disconnected, retrying in 10s");
+        if let Err(()) = run(stack).await {
+            error!("ws: disconnected");
+        }
         Timer::after(Duration::from_secs(10)).await;
     }
 }
 
-async fn process_frame(data: &[u8]) -> Result<(), ()> {
-    if data.len() < 2 {
-        rprintln!("ws: frame too short");
-        return Err(());
-    }
-
-    let opcode = data[0] & 0x0F;
-    let masked = (data[1] & 0x80) != 0;
-    let mut len = (data[1] & 0x7F) as usize;
-    let mut off = 2usize;
-
-    if len == 126 {
-        if data.len() < 4 {
-            rprintln!("ws: short ext len");
-            return Err(());
-        }
-        len = u16::from_be_bytes([data[2], data[3]]) as usize;
-        off = 4;
-    } else if len == 127 {
-        if data.len() < 10 {
-            rprintln!("ws: short ext len 64");
-            return Err(());
-        }
-        len = u64::from_be_bytes(data[2..10].try_into().unwrap()) as usize;
-        off = 10;
-    }
-
-    if masked {
-        off += 4;
-    }
-
-    if off + len > data.len() {
-        rprintln!(
-            "ws: frame truncated (off={} len={} n={})",
-            off,
-            len,
-            data.len()
-        );
-        return Err(());
-    }
-
-    let payload = &data[off..off + len];
-
-    match opcode {
-        1 => {
-            if let Ok(msg) = core::str::from_utf8(payload) {
-                rprintln!("ws: {}", msg);
-            } else {
-                rprintln!("ws: binary = {:02x?}", payload);
-            }
-        }
-        8 => {
-            rprintln!("ws: close frame");
-            return Err(());
-        }
-        9 => rprintln!("ws: ping"),
-        10 => rprintln!("ws: pong"),
-        _ => rprintln!("ws: unknown opcode {}", opcode),
-    }
-
-    Ok(())
-}
-
-async fn connect_and_read(stack: Stack<'_>) {
+async fn run(stack: Stack<'_>) -> Result<(), ()> {
     let mut rx_buf = [0u8; 4096];
     let mut tx_buf = [0u8; 1024];
     let mut socket = TcpSocket::new(stack, &mut rx_buf, &mut tx_buf);
+    let host = env!("NOTIFICATIONS_HOST");
+    let hostname = host.split(':').next().unwrap_or(host);
+    let port: u16 = host
+        .split(':')
+        .nth(1)
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(80);
 
-    let addr = (embassy_net::Ipv4Address::new(192, 168, 1, 13), 3003);
+    let ip = if let Ok(v4) = hostname.parse::<embassy_net::Ipv4Address>() {
+        embassy_net::IpAddress::Ipv4(v4)
+    } else {
+        let addrs = with_timeout(
+            Duration::from_secs(5),
+            stack.dns_query(hostname, DnsQueryType::A),
+        )
+        .await
+        .map_err(|_| error!("ws: dns timeout for {}", hostname))?
+        .map_err(|_| error!("ws: dns failed for {}", hostname))?;
+        addrs
+            .first()
+            .copied()
+            .ok_or_else(|| error!("ws: no dns results for {}", hostname))?
+    };
+    let addr = (ip, port);
 
-    rprintln!("ws: connecting...");
-    if socket.connect(addr).await.is_err() {
-        rprintln!("ws: connect failed");
-        return;
+    socket
+        .connect(addr)
+        .await
+        .map_err(|e| error!("ws: connect: {}", e))?;
+    info!("ws: connected");
+
+    handshake(&mut socket).await?;
+    info!("ws: handshake ok");
+
+    let mut buf = [0u8; 2048];
+    loop {
+        let header = FrameHeader::recv(&mut socket)
+            .await
+            .map_err(|e| error!("ws: recv header: {}", e))?;
+        let payload = header
+            .recv_payload(&mut socket, &mut buf)
+            .await
+            .map_err(|e| error!("ws: recv payload: {}", e))?;
+
+        match header.frame_type {
+            FrameType::Text(_) | FrameType::Binary(_) => {
+                if let Ok(msg) = str::from_utf8(payload) {
+                    info!("ws: {}", msg);
+                } else {
+                    info!("ws: binary = {:02x}", payload);
+                }
+            }
+            FrameType::Close => {
+                info!("ws: close");
+                return Err(());
+            }
+            FrameType::Ping => info!("ws: ping"),
+            FrameType::Pong => info!("ws: pong"),
+            FrameType::Continue(_) => info!("ws: continue"),
+        }
     }
+}
 
-    rprintln!("ws: connected");
-
+async fn handshake(socket: &mut TcpSocket<'_>) -> Result<(), ()> {
     let request = concat!(
         "GET /websocket/notifications HTTP/1.1\r\n",
         "Host: ",
@@ -116,76 +105,37 @@ async fn connect_and_read(stack: Stack<'_>) {
     )
     .as_bytes();
 
-    if socket.write_all(request).await.is_err() {
-        rprintln!("ws: send failed");
-        return;
-    }
-    rprintln!("ws: handshake sent");
+    socket
+        .write_all(request)
+        .await
+        .map_err(|e| error!("ws: handshake send: {}", e))?;
+    info!("ws: handshake sent");
 
     let mut buf = [0u8; 512];
     let mut pos = 0;
-    let mut headers_end = 0;
     loop {
-        let n = match socket.read(&mut buf[pos..]).await {
-            Ok(0) => break,
-            Ok(n) => n,
-            Err(_) => {
-                rprintln!("ws: read error");
-                return;
-            }
-        };
+        let n = socket
+            .read(&mut buf[pos..])
+            .await
+            .map_err(|e| error!("ws: handshake read: {}", e))?;
+        if n == 0 {
+            error!("ws: handshake eof");
+            return Err(());
+        }
         pos += n;
-        if let Some(idx) = buf[..pos].windows(4).position(|w| w == b"\r\n\r\n") {
-            headers_end = idx + 4;
+        if buf[..pos].windows(4).any(|w| w == b"\r\n\r\n") {
             break;
         }
         if pos >= buf.len() {
-            break;
+            error!("ws: handshake buf full");
+            return Err(());
         }
     }
 
-    let resp = core::str::from_utf8(&buf[..headers_end]).unwrap_or("???");
-    rprintln!("ws: resp = {}", resp);
-
+    let resp = str::from_utf8(&buf[..pos]).map_err(|_| error!("ws: handshake utf8"))?;
     if !resp.contains(" 101 ") {
-        rprintln!("ws: handshake failed");
-        return;
+        error!("ws: handshake failed: {}", resp);
+        return Err(());
     }
-    rprintln!("ws: handshake ok");
-
-    let leftover = if pos > headers_end {
-        &buf[headers_end..pos]
-    } else {
-        &[]
-    };
-
-    if !leftover.is_empty() && process_frame(leftover).await.is_err() {
-        return;
-    }
-
-    loop {
-        let mut frame_buf = [0u8; 2048];
-        let mut frame_pos = 0usize;
-
-        loop {
-            match socket.read(&mut frame_buf[frame_pos..]).await {
-                Ok(0) => {
-                    rprintln!("ws: connection closed");
-                    return;
-                }
-                Ok(n) => frame_pos += n,
-                Err(_) => {
-                    rprintln!("ws: read error");
-                    return;
-                }
-            }
-            if frame_pos > 0 {
-                break;
-            }
-        }
-
-        if process_frame(&frame_buf[..frame_pos]).await.is_err() {
-            return;
-        }
-    }
+    Ok(())
 }

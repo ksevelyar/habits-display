@@ -1,7 +1,8 @@
 [target.riscv32imc-unknown-none-elf]
-runner = "probe-rs run --chip=esp32c3 --preverify --always-print-stacktrace --no-location --catch-hardfault"
+runner = "probe-rs run --chip=esp32c3 --preverify --always-print-stacktrace --no-location"
 
 [env]
+DEFMT_LOG="info"
 
 [build]
 rustflags = [

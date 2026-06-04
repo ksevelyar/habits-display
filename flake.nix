@@ -27,6 +27,7 @@
           UTC_OFFSET = "180";
           JWT_TOKEN = "very secret";
           NOTIFICATIONS_HOST = "192.168.1.13:3003";
+          DEFMT_LOG = "info";
 
           buildInputs = with pkgs; [
             (rust-bin.nightly.latest.default.override {

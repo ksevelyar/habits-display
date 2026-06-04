@@ -2,6 +2,7 @@ name: Continuous Integration
 
 on:
   push:
+    branches: [main]
     paths-ignore:
       - "**/readme.md"
   pull_request:
