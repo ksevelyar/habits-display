@@ -1,12 +1,15 @@
 use core::str;
 
 use defmt::{error, info};
-use edge_ws::{FrameHeader, FrameType};
+use edge_ws::{FrameHeader, FrameType, io};
 use embassy_net::Stack;
 use embassy_net::dns::DnsQueryType;
 use embassy_net::tcp::TcpSocket;
 use embassy_time::{Duration, Timer, with_timeout};
 use embedded_io_async::Write;
+use heapless::String;
+
+use crate::DISPLAY_CHANNEL;
 
 #[embassy_executor::task]
 pub async fn task(stack: Stack<'static>) -> ! {
@@ -71,21 +74,43 @@ async fn run(stack: Stack<'_>) -> Result<(), ()> {
 
         match header.frame_type {
             FrameType::Text(_) | FrameType::Binary(_) => {
-                if let Ok(msg) = str::from_utf8(payload) {
-                    info!("ws: {}", msg);
-                } else {
+                let Ok(msg) = str::from_utf8(payload) else {
                     info!("ws: binary = {:02x}", payload);
+                    continue;
+                };
+
+                let Some(task_name) = extract_task_name(msg) else {
+                    info!("ws: {}", msg);
+                    continue;
+                };
+
+                info!("ws: task: {}", task_name);
+                if let Ok(s) = String::try_from(task_name) {
+                    DISPLAY_CHANNEL.send(s).await;
                 }
             }
             FrameType::Close => {
                 info!("ws: close");
                 return Err(());
             }
-            FrameType::Ping => info!("ws: ping"),
+            FrameType::Ping => {
+                info!("ws: ping");
+                if let Err(e) = io::send(&mut socket, FrameType::Pong, Some(0), payload).await {
+                    error!("ws: send pong: {}", e);
+                }
+            }
             FrameType::Pong => info!("ws: pong"),
             FrameType::Continue(_) => info!("ws: continue"),
         }
     }
+}
+
+fn extract_task_name(msg: &str) -> Option<&str> {
+    let prefix = "\"task_name\":\"";
+    let start = msg.find(prefix)?;
+    let value_start = start + prefix.len();
+    let end = msg[value_start..].find('"')?;
+    Some(&msg[value_start..value_start + end])
 }
 
 async fn handshake(socket: &mut TcpSocket<'_>) -> Result<(), ()> {

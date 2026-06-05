@@ -2,7 +2,7 @@
 edition      = "2024"
 name         = "habits-display"
 rust-version = "1.96"
-version      = "0.1.0"
+version      = "0.2.0"
 
 [[bin]]
 name = "habits-display"
@@ -74,6 +74,12 @@ sntpc = { version = "0.9", default-features = false }
 sntpc-net-embassy = { version = "0.9", default-features = false }
 
 edge-ws = { version = "0.7", default-features = false, features = ["io", "defmt"] }
+
+embedded-graphics = "0.8"
+embedded-hal-bus = "0.3"
+mipidsi = "0.10"
+embassy-sync = { version = "0.8.0", features = ["defmt"] }
+heapless = { version = "0.9", default-features = false }
 
 [patch.crates-io]
 # NOTE: https://github.com/GnomedDev/proc-macro-error-2/pull/14
