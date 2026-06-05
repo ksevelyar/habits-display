@@ -2,8 +2,17 @@
 #![no_main]
 
 use esp_alloc as _;
-use esp_hal::{clock::CpuClock, rtc_cntl::Rtc, timer::timg::TimerGroup};
-use habits_display::{ntp, websocket, wifi};
+use esp_hal::{
+    clock::CpuClock,
+    rtc_cntl::Rtc,
+    spi::{
+        Mode,
+        master::{Config, Spi},
+    },
+    time::Rate,
+    timer::timg::TimerGroup,
+};
+use habits_display::{display, ntp, websocket, wifi};
 use panic_rtt_target as _;
 
 use defmt::info;
@@ -32,10 +41,28 @@ async fn main(spawner: Spawner) -> ! {
 
     let (controller, stack, runner) = wifi::init(peripherals.WIFI).await;
 
+    let sclk = peripherals.GPIO4;
+    let mosi = peripherals.GPIO6;
+
+    let cs = peripherals.GPIO7;
+    let dc = peripherals.GPIO8;
+    let rst = peripherals.GPIO9;
+
+    let spi = Spi::new(
+        peripherals.SPI2,
+        Config::default()
+            .with_frequency(Rate::from_khz(40000))
+            .with_mode(Mode::_0),
+    )
+    .unwrap()
+    .with_sck(sclk)
+    .with_mosi(mosi);
+
     spawner.spawn(wifi::connection(controller).unwrap());
     spawner.spawn(wifi::net_task(runner).unwrap());
     spawner.spawn(ntp::task(stack, rtc).unwrap());
     spawner.spawn(websocket::task(stack).unwrap());
+    spawner.spawn(display::task(spi, cs, dc, rst).unwrap());
 
     loop {
         Timer::after(Duration::from_secs(3600)).await;
