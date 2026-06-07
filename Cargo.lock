@@ -72,9 +72,9 @@ checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
 
 [[package]]
 name = "bitflags"
-version = "2.12.1"
+version = "2.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "84d7ced0ae9557296835c32bf1b1e02b44c746701f898460fb000d7eaa84f00a"
+checksum = "b4388bee8683e3d04af747c73422af53102d2bd24d9eadb6cbc100baef4b43f8"
 
 [[package]]
 name = "block-buffer"
@@ -836,7 +836,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2bfcf2a0842903717f4663f6a08512c32b0f6b2d7fb7db3c8a6895d2e6d49f72"
 dependencies = [
  "bitfield",
- "bitflags 2.12.1",
+ "bitflags 2.13.0",
  "bytemuck",
  "cfg-if",
  "critical-section",
@@ -1304,7 +1304,6 @@ dependencies = [
 name = "habits-display"
 version = "0.2.0"
 dependencies = [
- "critical-section",
  "defmt 1.1.0",
  "edge-ws",
  "embassy-executor",
@@ -1313,7 +1312,6 @@ dependencies = [
  "embassy-time",
  "embedded-graphics",
  "embedded-hal-bus",
- "embedded-io 0.7.1",
  "embedded-io-async 0.7.0",
  "embedded-test",
  "esp-alloc",
@@ -1325,7 +1323,6 @@ dependencies = [
  "mipidsi",
  "panic-rtt-target",
  "rtt-target",
- "smoltcp",
  "sntpc",
  "sntpc-net-embassy",
  "static_cell",

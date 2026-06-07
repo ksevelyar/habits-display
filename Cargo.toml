@@ -38,7 +38,6 @@ embassy-net = { version = "0.9.1", features = [
   "udp",
   "dns"
 ] }
-embedded-io = { version = "0.7.1", features = ["defmt"] }
 embedded-io-async = { version = "0.7.0", features = ["defmt"] }
 esp-alloc = { version = "0.10.0", features = ["defmt"] }
 panic-rtt-target = { version = "0.2.0", features = ["defmt"] }
@@ -53,22 +52,8 @@ esp-radio = { version = "0.18.0", features = [
   "unstable",
   "wifi",
 ] }
-smoltcp = { version = "0.13.0", default-features = false, features = [
-  "defmt",
-  "medium-ethernet",
-  "multicast",
-  "proto-dhcpv4",
-  "proto-dns",
-  "proto-ipv4",
-  "socket-dns",
-  "socket-icmp",
-  "socket-raw",
-  "socket-tcp",
-  "socket-udp",
-] }
 
-critical-section = "1.2.0"
-static_cell      = {version = "2.1.1", features = ["nightly"]}
+static_cell = {version = "2.1.1", features = ["nightly"]}
 
 sntpc = { version = "0.9", default-features = false }
 sntpc-net-embassy = { version = "0.9", default-features = false }

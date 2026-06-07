@@ -1,6 +1,7 @@
 use defmt::error;
 use embedded_graphics::{
     geometry::Point,
+    image::{Image, ImageRaw},
     mono_font::{MonoTextStyle, ascii::FONT_10X20},
     pixelcolor::Rgb565,
     prelude::*,
@@ -46,10 +47,15 @@ pub async fn task(
 
     let mut display = Builder::new(ST7789, di)
         .reset_pin(rst)
-        .display_size(240, 320)
+        .display_size(240, 300)
         .orientation(Orientation::new().rotate(Rotation::Deg180))
         .invert_colors(ColorInversion::Inverted)
         .init(&mut delay)
+        .unwrap();
+
+    let raw = ImageRaw::<Rgb565>::new(include_bytes!("assets/cat.rgb565"), 240);
+    Image::new(&raw, Point::new(0, 0))
+        .draw(&mut display)
         .unwrap();
 
     let mut msgs: [Option<String<256>>; 3] = [None, None, None];
@@ -61,10 +67,6 @@ pub async fn task(
 
         msgs.rotate_left(1);
         msgs[2] = Some(msg);
-
-        if display.clear(Rgb565::new(0, 0, 0)).is_err() {
-            error!("display: clear failed");
-        }
 
         let count = msgs.iter().filter(|item| item.is_some()).count();
         for (index, msg) in msgs.iter().flatten().enumerate() {
