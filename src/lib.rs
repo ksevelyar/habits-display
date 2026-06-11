@@ -6,7 +6,7 @@ use embassy_sync::channel::Channel;
 use heapless::String;
 
 pub mod display;
-pub mod ntp;
+pub mod time;
 pub mod websocket;
 pub mod wifi;
 
