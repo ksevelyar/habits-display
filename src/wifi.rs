@@ -10,6 +10,7 @@ extern crate alloc;
 
 const SSID: &str = env!("SSID");
 const PASSWORD: &str = env!("PASS");
+const WIFI_TRANSMIT_POWER: &str = env!("WIFI_TRANSMIT_POWER");
 
 pub async fn init(
     wifi: esp_hal::peripherals::WIFI<'static>,
@@ -24,16 +25,18 @@ pub async fn init(
             .with_password(PASSWORD.into()),
     );
 
-    info!("starting wifi");
     let (mut controller, interfaces) = esp_radio::wifi::new(
         wifi,
         ControllerConfig::default().with_initial_config(station_config),
     )
     .expect("Failed to initialize Wi-Fi controller");
 
-    // NOTE: Power unit is 0.25dBm, range is [8, 84] corresponding to 2dBm - 20dBm.
+    let max_tx_power_dbm: i8 = WIFI_TRANSMIT_POWER
+        .parse()
+        .expect("WIFI_TRANSMIT_POWER must be a valid integer");
     controller
-        .set_max_tx_power(64)
+        // NOTE: Power unit is 0.25dBm, range is [8, 84] corresponding to 2dBm - 20dBm.
+        .set_max_tx_power(max_tx_power_dbm * 4)
         .expect("Failed to set max TX power");
 
     let config = embassy_net::Config::dhcpv4(Default::default());
@@ -51,49 +54,44 @@ pub async fn init(
 
 #[embassy_executor::task]
 pub async fn connection(mut controller: WifiController<'static>) {
-    info!("start connection task");
     let mut failed_attempts: u32 = 0;
 
     loop {
-        info!("About to connect...");
+        info!("wifi: connecting to \"{}\"", env!("SSID"));
 
         match controller.connect_async().await {
             Ok(info) => {
                 failed_attempts = 0;
-                info!(
-                    "Connected to \"{}\" (channel: {})",
-                    info.ssid.as_str(),
-                    info.channel,
-                );
+                info!("wifi: connected to \"{}\"", info.ssid.as_str());
 
                 match controller.wait_for_disconnect_async().await {
                     Ok(info) => {
                         info!(
-                            "Disconnected from \"{}\" (reason: {:?}, rssi: {})",
+                            "wifi: disconnected from \"{}\" (reason: {:?}, rssi: {})",
                             info.ssid.as_str(),
                             info.reason,
                             info.rssi,
                         );
                     }
                     Err(e) => {
-                        warn!("Disconnect wait failed: {:?}", e);
+                        warn!("wifi: disconnect wait failed: {:?}", e);
                     }
                 }
             }
             Err(err) => {
                 failed_attempts += 1;
-                warn!("Connection attempt {} failed", failed_attempts);
+                warn!("wifi: connection attempt {} failed", failed_attempts);
                 match err {
                     esp_radio::wifi::WifiError::Disconnected(info) => {
                         error!(
-                            "SSID: \"{}\", reason: {:?}, RSSI: {}",
+                            "wifi: disconnected: SSID: \"{}\", reason: {:?}, RSSI: {}",
                             info.ssid.as_str(),
                             info.reason,
                             info.rssi,
                         );
                     }
                     _ => {
-                        error!("Failed to connect to wifi: {:?}", err);
+                        error!("wifi: connection failed: {:?}", err);
                     }
                 }
             }

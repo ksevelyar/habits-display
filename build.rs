@@ -1,4 +1,24 @@
 fn main() {
+    let timezone = std::env::var("TIMEZONE").unwrap();
+
+    let power_str = std::env::var("WIFI_TRANSMIT_POWER").expect("WIFI_TRANSMIT_POWER must be set");
+    let power: i8 = power_str
+        .parse()
+        .expect("WIFI_TRANSMIT_POWER must be a valid integer");
+    assert!(
+        (2..=20).contains(&power),
+        "WIFI_TRANSMIT_POWER must be between 2 and 20 dBm, got {power}",
+    );
+    println!("cargo:rerun-if-env-changed=WIFI_TRANSMIT_POWER");
+
+    let out = std::env::var("OUT_DIR").unwrap();
+    std::fs::write(
+        std::path::Path::new(&out).join("timezone.rs"),
+        format!("pub const TIMEZONE: ::jiff::tz::TimeZone = ::jiff::tz::get!(\"{timezone}\");\n"),
+    )
+    .unwrap();
+    println!("cargo:rerun-if-env-changed=TIMEZONE");
+
     linker_be_nice();
     println!("cargo:rustc-link-arg-tests=-Tembedded-test.x");
     println!("cargo:rustc-link-arg=-Tdefmt.x");

@@ -4,6 +4,7 @@
 use esp_alloc as _;
 use esp_hal::{
     clock::CpuClock,
+    rng::Rng,
     rtc_cntl::Rtc,
     spi::{
         Mode,
@@ -12,7 +13,7 @@ use esp_hal::{
     time::Rate,
     timer::timg::TimerGroup,
 };
-use habits_display::{display, ntp, websocket, wifi};
+use habits_display::{display, time, websocket, wifi};
 use panic_rtt_target as _;
 
 use defmt::info;
@@ -58,10 +59,12 @@ async fn main(spawner: Spawner) -> ! {
     .with_sck(sclk)
     .with_mosi(mosi);
 
+    let rng = Rng::new();
+
     spawner.spawn(wifi::connection(controller).unwrap());
     spawner.spawn(wifi::net_task(runner).unwrap());
-    spawner.spawn(ntp::task(stack, rtc).unwrap());
-    spawner.spawn(websocket::task(stack).unwrap());
+    spawner.spawn(time::task(rtc, stack).unwrap());
+    spawner.spawn(websocket::task(stack, rng).unwrap());
     spawner.spawn(display::task(spi, cs, dc, rst).unwrap());
 
     loop {
