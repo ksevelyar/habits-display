@@ -76,7 +76,7 @@ module base() {
         height=39.55,
         r=1.5
       );
-    translate([-display_width / 2 - wall, display_length - 17, height * 1.7]) rotate([90, 0, 180]) leg(10);
+    translate([-display_width / 2 - wall, display_length - 17, height * 1.7]) rotate([90, 0, 180]) leg(9);
   }
 }
 base();

@@ -2,7 +2,7 @@ wall = 2;
 display_length = 47;
 display_width = 31.5;
 esp32c3_width = 18.5;
-esp32c3_length = 24;
+esp32c3_length = 22;
 height = 24;
 
 case_width = display_width + wall * 2;
@@ -36,7 +36,7 @@ module type_c_cutout() {
 
 module leg(leg_height) {
   difference() {
-    cylinder(h=leg_height, d=6.24, $fn=32);
+    cylinder(h=leg_height, d=5.5, $fn=32);
     translate([0, 0, -0.1]) cylinder(h=leg_height + 1, d=3.12, $fn=32);
   }
 }
