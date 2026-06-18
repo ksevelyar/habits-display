@@ -215,9 +215,9 @@ fn encode_websocket_key(input: &[u8; 16]) -> [u8; 24] {
         b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut output = [0u8; 24];
     for (index, chunk) in input.chunks(3).enumerate() {
-        let byte_0 = chunk[0] as u32;
-        let byte_1 = chunk.get(1).copied().unwrap_or(0) as u32;
-        let byte_2 = chunk.get(2).copied().unwrap_or(0) as u32;
+        let byte_0 = u32::from(chunk[0]);
+        let byte_1 = u32::from(chunk.get(1).copied().unwrap_or(0));
+        let byte_2 = u32::from(chunk.get(2).copied().unwrap_or(0));
         let triple = (byte_0 << 16) | (byte_1 << 8) | byte_2;
         let output_offset = index * 4;
         output[output_offset] = BASE64_ALPHABET[((triple >> 18) & 0x3F) as usize];

@@ -40,7 +40,7 @@ pub async fn init(
         .expect("Failed to set max TX power");
 
     let config = embassy_net::Config::dhcpv4(Default::default());
-    let seed = (Rng::new().random() as u64) << 32 | Rng::new().random() as u64;
+    let seed = u64::from(Rng::new().random()) << 32 | u64::from(Rng::new().random());
 
     let (stack, runner) = embassy_net::new(
         interfaces.station,
@@ -97,11 +97,11 @@ pub async fn connection(mut controller: WifiController<'static>) {
             }
         }
 
-        Timer::after(Duration::from_millis(5000)).await
+        Timer::after(Duration::from_millis(5000)).await;
     }
 }
 
 #[embassy_executor::task]
 pub async fn net_task(mut runner: Runner<'static, Interface<'static>>) {
-    runner.run().await
+    runner.run().await;
 }

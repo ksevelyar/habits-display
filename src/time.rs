@@ -38,14 +38,14 @@ pub fn epoch_secs() -> Option<u32> {
         return None;
     }
     let now = Instant::now().as_secs();
-    let ibase = INSTANT_BASE.load(Ordering::Relaxed) as u64;
+    let ibase = u64::from(INSTANT_BASE.load(Ordering::Relaxed));
     let delta = now.saturating_sub(ibase) as u32;
     Some(base + delta)
 }
 
 fn local_time() -> jiff::Zoned {
     let epoch_secs = epoch_secs().unwrap_or(0);
-    let timestamp = jiff::Timestamp::new(epoch_secs as i64, 0).unwrap();
+    let timestamp = jiff::Timestamp::new(i64::from(epoch_secs), 0).unwrap();
 
     timestamp.to_zoned(crate::time::TIMEZONE)
 }
@@ -60,7 +60,7 @@ fn seed_from_rtc(rtc: &Rtc) {
     let secs = (us / USEC_IN_SEC) as u32;
     if secs > MIN_VALID_EPOCH {
         set_epoch(secs);
-        let ts = Timestamp::new(secs as i64, 0).unwrap();
+        let ts = Timestamp::new(i64::from(secs), 0).unwrap();
         let z = ts.to_zoned(TIMEZONE);
         info!(
             "time: rtc seeded: {=str} {=i16}-{=i8:02}-{=i8:02} {=i8:02}:{=i8:02}:{=i8:02}",
@@ -84,7 +84,7 @@ fn log_sync(correction: Option<i64>) {
     }
 
     if let Some(epoch) = epoch_secs() {
-        let ts = Timestamp::new(epoch as i64, 0).unwrap();
+        let ts = Timestamp::new(i64::from(epoch), 0).unwrap();
         let z = ts.to_zoned(TIMEZONE);
         info!(
             "time: {=str} {=i16}-{=i8:02}-{=i8:02} {=i8:02}:{=i8:02}:{=i8:02}",
@@ -149,12 +149,12 @@ async fn sync_with_ntp(
         Ok(time) => {
             let old_epoch = epoch_secs();
 
-            let epoch_us = (time.sec() as u64 * USEC_IN_SEC)
-                + ((time.sec_fraction() as u64 * USEC_IN_SEC) >> 32);
+            let epoch_us = (u64::from(time.sec()) * USEC_IN_SEC)
+                + ((u64::from(time.sec_fraction()) * USEC_IN_SEC) >> 32);
 
             let new_epoch = (epoch_us / USEC_IN_SEC) as u32;
 
-            let correction = old_epoch.map(|old| new_epoch as i64 - old as i64);
+            let correction = old_epoch.map(|old| i64::from(new_epoch) - i64::from(old));
 
             rtc.set_current_time_us(epoch_us);
             set_epoch(new_epoch);
