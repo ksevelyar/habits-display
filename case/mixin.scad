@@ -13,7 +13,7 @@ case_base_height = 39.55;
 $fn = 128;
 
 module rail_side(half_width, length, y) {
-  translate([-half_width - 2, y, 0]) cube([2, length, 6]);
+  translate([-half_width - 2, y, 0]) cube([2, length, 6.6]);
   hull() {
     translate([-half_width - 0.15, y, 2.5]) rotate([0, -40, 0]) cube([1.5, length, 1]);
     translate([-half_width - 0.5, y, 3.4]) cube([1.5, length, 1]);
@@ -33,15 +33,15 @@ module esp32c3_mini_rails() {
 module type_c_cutout() {
   rotate([90, 0, 0])
     hull() {
-      translate([-3.1, 0, 0]) cylinder(h=10, d=3.7);
-      translate([3.1, 0, 0]) cylinder(h=10, d=3.7);
+      translate([-3.2, 0, 0]) cylinder(h=10, d=3.7);
+      translate([3.2, 0, 0]) cylinder(h=10, d=3.7);
     }
 }
 
 module leg(leg_height) {
   difference() {
-    cylinder(h=leg_height, d=5);
-    translate([0, 0, -0.1]) cylinder(h=leg_height + 1, d=3);
+    cylinder(h=leg_height, d=5.1);
+    translate([0, 0, -0.1]) cylinder(h=leg_height + 1, d=2.7);
   }
 }
 
