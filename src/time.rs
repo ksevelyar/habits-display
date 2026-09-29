@@ -1,3 +1,4 @@
+use crate::AppError;
 use core::net::{IpAddr, SocketAddr};
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -121,12 +122,12 @@ async fn sync_with_ntp(
     rx_buffer: &mut [u8; 4096],
     tx_meta: &mut [PacketMetadata; 16],
     tx_buffer: &mut [u8; 4096],
-) {
+) -> Result<(), AppError> {
     let ntp_addrs = match stack.dns_query(NTP_SERVER, DnsQueryType::A).await {
         Ok(addrs) if !addrs.is_empty() => addrs,
         _ => {
             error!("time: DNS failed");
-            return;
+            return Err(AppError::Network("resolving ntp server failed"));
         }
     };
 
@@ -160,9 +161,11 @@ async fn sync_with_ntp(
             set_epoch(new_epoch);
 
             log_sync(correction);
+            Ok(())
         }
         Err(_e) => {
             error!("time: NTP failed");
+            Err(AppError::Network("ntp exchange failed"))
         }
     }
 }
@@ -178,7 +181,7 @@ pub async fn task(rtc: Rtc<'static>, stack: Stack<'static>) {
 
     loop {
         stack.wait_config_up().await;
-        sync_with_ntp(
+        if let Err(e) = sync_with_ntp(
             &rtc,
             &stack,
             &mut rx_meta,
@@ -186,7 +189,10 @@ pub async fn task(rtc: Rtc<'static>, stack: Stack<'static>) {
             &mut tx_meta,
             &mut tx_buffer,
         )
-        .await;
+        .await
+        {
+            error!("time: sync failed: {}", e);
+        }
 
         Timer::after(Duration::from_secs(4 * 3600)).await;
     }

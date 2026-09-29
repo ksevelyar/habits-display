@@ -40,7 +40,7 @@ async fn main(spawner: Spawner) -> ! {
     esp_rtos::start(timg0.timer0, sw_interrupt.software_interrupt0);
     info!("Embassy initialized!");
 
-    let (controller, stack, runner) = wifi::init(peripherals.WIFI).await;
+    let (controller, stack, runner) = wifi::init(peripherals.WIFI);
 
     let sclk = peripherals.GPIO4;
     let mosi = peripherals.GPIO6;

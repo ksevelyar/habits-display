@@ -11,3 +11,10 @@ pub mod websocket;
 pub mod wifi;
 
 pub static DISPLAY_CHANNEL: Channel<CriticalSectionRawMutex, String<256>, 3> = Channel::new();
+
+#[derive(defmt::Format, Debug)]
+pub enum AppError {
+    Config(&'static str),
+    Network(&'static str),
+    Timeout,
+}

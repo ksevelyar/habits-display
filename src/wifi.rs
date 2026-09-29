@@ -12,7 +12,7 @@ const SSID: &str = env!("SSID");
 const PASSWORD: &str = env!("PASS");
 const WIFI_TRANSMIT_POWER: &str = env!("WIFI_TRANSMIT_POWER");
 
-pub async fn init(
+pub fn init(
     wifi: esp_hal::peripherals::WIFI<'static>,
 ) -> (
     WifiController<'static>,

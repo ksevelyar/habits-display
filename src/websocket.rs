@@ -5,23 +5,17 @@ use edge_ws::{FrameHeader, FrameType, io};
 use embassy_net::Stack;
 use embassy_net::dns::DnsQueryType;
 use embassy_net::tcp::TcpSocket;
-use embassy_time::{Duration, Timer, with_timeout};
+use embassy_time::{Duration, TimeoutError, Timer, WithTimeout, with_timeout};
 use embedded_io_async::ErrorType;
 use embedded_io_async::{Read, Write};
 use heapless::String;
 use rand_core::{CryptoRng, RngCore};
 
-use crate::DISPLAY_CHANNEL;
+use crate::{AppError, DISPLAY_CHANNEL};
 
-#[derive(Format)]
-enum Error {
-    Dns,
-    Connect,
-    Tls,
-    Handshake,
-    Protocol,
-    Close,
-}
+use AppError::{Network, Timeout};
+
+const RECONNECT_DELAY: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Copy)]
 struct RngCrypto(esp_hal::rng::Rng);
@@ -55,11 +49,14 @@ pub async fn task(stack: Stack<'static>, mut random_generator: esp_hal::rng::Rng
         if let Err(e) = connect(stack, &mut random_generator).await {
             error!("ws: disconnected: {}", e);
         }
-        Timer::after(Duration::from_secs(10)).await;
+        Timer::after(RECONNECT_DELAY).await;
     }
 }
 
-async fn resolve_host(stack: Stack<'_>, hostname: &str) -> Result<embassy_net::IpAddress, Error> {
+async fn resolve_host(
+    stack: Stack<'_>,
+    hostname: &str,
+) -> Result<embassy_net::IpAddress, AppError> {
     if let Ok(ipv4) = hostname.parse::<embassy_net::Ipv4Address>() {
         Ok(embassy_net::IpAddress::Ipv4(ipv4))
     } else {
@@ -70,27 +67,32 @@ async fn resolve_host(stack: Stack<'_>, hostname: &str) -> Result<embassy_net::I
         .await
         .map_err(|_| {
             error!("ws: dns timeout for {}", hostname);
-            Error::Dns
+            Network("dns lookup timed out")
         })?
         .map_err(|_| {
             error!("ws: dns failed for {}", hostname);
-            Error::Dns
+            Network("dns lookup failed")
         })?;
         addresses.first().copied().ok_or_else(|| {
             error!("ws: no dns results for {}", hostname);
-            Error::Dns
+            Network("dns lookup returned no addresses")
         })
     }
 }
 
-async fn connect(stack: Stack<'_>, random_generator: &mut esp_hal::rng::Rng) -> Result<(), Error> {
+async fn connect(
+    stack: Stack<'_>,
+    random_generator: &mut esp_hal::rng::Rng,
+) -> Result<(), AppError> {
     let host_with_port = env!("NOTIFICATIONS_HOST");
     let mut segments = host_with_port.split(':');
     let hostname = segments.next().unwrap_or(host_with_port);
+    let use_tls = env!("USE_TLS") == "true";
+    let default_port = if use_tls { 443 } else { 80 };
     let port: u16 = segments
         .next()
         .and_then(|port_string| port_string.parse().ok())
-        .unwrap_or(80);
+        .unwrap_or(default_port);
 
     let address = resolve_host(stack, hostname).await?;
     let endpoint = (address, port);
@@ -101,11 +103,10 @@ async fn connect(stack: Stack<'_>, random_generator: &mut esp_hal::rng::Rng) -> 
 
     socket.connect(endpoint).await.map_err(|error| {
         error!("ws: connect: {}", error);
-        Error::Connect
+        Network("tcp connection failed")
     })?;
     info!("ws: connected");
 
-    let use_tls = env!("USE_TLS") == "true";
     if use_tls {
         use embedded_tls::{
             Aes128GcmSha256, TlsConfig, TlsConnection, TlsContext, UnsecureProvider,
@@ -121,7 +122,7 @@ async fn connect(stack: Stack<'_>, random_generator: &mut esp_hal::rng::Rng) -> 
             .await
             .map_err(|e| {
                 error!("wss: tls handshake: {}", e);
-                Error::Tls
+                Network("tls negotiation failed")
             })?;
         info!("ws: tls established");
 
@@ -134,29 +135,39 @@ async fn connect(stack: Stack<'_>, random_generator: &mut esp_hal::rng::Rng) -> 
 async fn receive_frame<'a, R: Read + Write>(
     stream: &mut R,
     buffer: &'a mut [u8],
-) -> Result<(FrameType, &'a [u8]), Error>
+) -> Result<(FrameType, &'a [u8]), AppError>
 where
     <R as ErrorType>::Error: Format,
 {
-    let header = FrameHeader::recv(&mut *stream).await.map_err(|e| {
-        error!("ws: receive header: {}", e);
-        Error::Protocol
-    })?;
-    let payload = header
-        .recv_payload(&mut *stream, buffer)
-        .await
-        .map_err(|e| {
-            error!("ws: receive payload: {}", e);
-            Error::Protocol
+    let server_ping_interval = Duration::from_secs(30);
+    let idle_limit = server_ping_interval * 3;
+
+    let frame = async {
+        let header = FrameHeader::recv(&mut *stream).await.map_err(|e| {
+            error!("ws: receive header: {}", e);
+            Network("reading frame header failed")
         })?;
-    Ok((header.frame_type, payload))
+        let payload = header
+            .recv_payload(&mut *stream, buffer)
+            .await
+            .map_err(|e| {
+                error!("ws: receive payload: {}", e);
+                Network("reading frame payload failed")
+            })?;
+        Ok((header.frame_type, payload))
+    };
+
+    frame
+        .with_timeout(idle_limit)
+        .await
+        .map_err(|TimeoutError| Timeout)?
 }
 
 async fn handle_frame<R: Read + Write>(
     stream: &mut R,
     frame_type: FrameType,
     payload: &[u8],
-) -> Result<(), Error>
+) -> Result<(), AppError>
 where
     <R as ErrorType>::Error: Format,
 {
@@ -171,7 +182,7 @@ where
         }
         FrameType::Close => {
             info!("ws: close");
-            Err(Error::Close)
+            Err(Network("server closed the connection"))
         }
         FrameType::Ping => {
             info!("ws: ping");
@@ -239,7 +250,7 @@ fn encode_websocket_key(input: &[u8; 16]) -> [u8; 24] {
 async fn run_websocket_loop<R: Read + Write>(
     stream: &mut R,
     random_generator: &mut esp_hal::rng::Rng,
-) -> Result<(), Error>
+) -> Result<(), AppError>
 where
     <R as ErrorType>::Error: Format,
 {
@@ -253,14 +264,17 @@ where
     }
 }
 
-async fn write_request_data<R: Write>(stream: &mut R, data: &[u8]) -> Result<(), Error> {
-    stream.write_all(data).await.map_err(|_| Error::Handshake)
+async fn write_request_data<R: Write>(stream: &mut R, data: &[u8]) -> Result<(), AppError> {
+    stream
+        .write_all(data)
+        .await
+        .map_err(|_| Network("sending handshake request failed"))
 }
 
 async fn handshake<R: Read + Write>(
     stream: &mut R,
     random_generator: &mut esp_hal::rng::Rng,
-) -> Result<(), Error>
+) -> Result<(), AppError>
 where
     <R as ErrorType>::Error: Format,
 {
@@ -282,7 +296,10 @@ where
     write_request_data(stream, env!("JWT_TOKEN").as_bytes()).await?;
     write_request_data(stream, b"\r\n\r\n").await?;
 
-    stream.flush().await.map_err(|_| Error::Handshake)?;
+    stream
+        .flush()
+        .await
+        .map_err(|_| Network("sending handshake request failed"))?;
     info!("ws: handshake sent");
 
     let mut buffer = [0u8; 512];
@@ -294,11 +311,11 @@ where
             .await
             .map_err(|error| {
                 error!("ws: handshake read: {}", error);
-                Error::Handshake
+                Network("reading handshake response failed")
             })?;
         if bytes_read == 0 {
             error!("ws: handshake eof");
-            return Err(Error::Handshake);
+            return Err(Network("handshake response ended early"));
         }
         position += bytes_read;
         if buffer[search_from..position]
@@ -310,17 +327,17 @@ where
         search_from = position.saturating_sub(3);
         if position >= buffer.len() {
             error!("ws: handshake buf full");
-            return Err(Error::Handshake);
+            return Err(Network("handshake response exceeded buffer"));
         }
     }
 
     let response = str::from_utf8(&buffer[..position]).map_err(|_| {
         error!("ws: handshake utf8");
-        Error::Handshake
+        Network("handshake response is not utf-8")
     })?;
-    if !response.contains(" 101 ") {
+    if !response.starts_with("HTTP/1.1 101") {
         error!("ws: handshake failed: {}", response);
-        return Err(Error::Handshake);
+        return Err(Network("handshake response status is not 101"));
     }
     Ok(())
 }
