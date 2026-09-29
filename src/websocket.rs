@@ -15,7 +15,6 @@ use crate::{AppError, DISPLAY_CHANNEL};
 
 use AppError::{Network, Timeout};
 
-const RECONNECT_DELAY: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Copy)]
 struct RngCrypto(esp_hal::rng::Rng);
@@ -42,6 +41,7 @@ impl CryptoRng for RngCrypto {}
 
 #[embassy_executor::task]
 pub async fn task(stack: Stack<'static>, mut random_generator: esp_hal::rng::Rng) -> ! {
+    let reconnect_delay = Duration::from_secs(10);
     stack.wait_config_up().await;
     info!("ws: network ready");
 
@@ -49,7 +49,7 @@ pub async fn task(stack: Stack<'static>, mut random_generator: esp_hal::rng::Rng
         if let Err(e) = connect(stack, &mut random_generator).await {
             error!("ws: disconnected: {}", e);
         }
-        Timer::after(RECONNECT_DELAY).await;
+        Timer::after(reconnect_delay).await;
     }
 }
 
@@ -101,10 +101,18 @@ async fn connect(
     let mut tcp_write_buffer = [0u8; 1024];
     let mut socket = TcpSocket::new(stack, &mut tcp_read_buffer, &mut tcp_write_buffer);
 
-    socket.connect(endpoint).await.map_err(|error| {
-        error!("ws: connect: {}", error);
-        Network("tcp connection failed")
-    })?;
+    let connect = async {
+        socket.connect(endpoint).await.map_err(|error| {
+            error!("ws: connect: {}", error);
+            Network("tcp connection failed")
+        })
+    };
+    with_timeout(Duration::from_secs(15), connect)
+        .await
+        .map_err(|TimeoutError| {
+            error!("ws: tcp connect timed out");
+            Timeout
+        })??;
     info!("ws: connected");
 
     if use_tls {
@@ -118,12 +126,18 @@ async fn connect(
         let provider = UnsecureProvider::new::<Aes128GcmSha256>(RngCrypto(*random_generator));
 
         let mut tls = TlsConnection::new(socket, &mut tls_read_buffer, &mut tls_write_buffer);
-        tls.open(TlsContext::new(&config, provider))
-            .await
-            .map_err(|e| {
+        let handshake = async {
+            tls.open(TlsContext::new(&config, provider)).await.map_err(|e| {
                 error!("wss: tls handshake: {}", e);
                 Network("tls negotiation failed")
-            })?;
+            })
+        };
+        with_timeout(Duration::from_secs(15), handshake)
+            .await
+            .map_err(|TimeoutError| {
+                error!("ws: tls handshake timed out");
+                Timeout
+            })??;
         info!("ws: tls established");
 
         run_websocket_loop(&mut tls, random_generator).await
@@ -215,10 +229,16 @@ fn parse_notification(payload: &[u8]) -> Option<String<256>> {
     let value_start = start + prefix.len();
     let end = message[value_start..].find('"')?;
 
-    let task_name = &message[value_start..value_start + end];
+    let task_name_raw = &message[value_start..value_start + end];
+    let mut task_name = String::<256>::new();
+    for character in task_name_raw.chars().filter(|c| c.is_ascii_graphic() || *c == ' ') {
+        if task_name.push(character).is_err() {
+            break;
+        }
+    }
 
     info!("ws: task: {}", task_name);
-    String::try_from(task_name).ok()
+    Some(task_name)
 }
 
 fn encode_websocket_key(input: &[u8; 16]) -> [u8; 24] {
@@ -254,7 +274,12 @@ async fn run_websocket_loop<R: Read + Write>(
 where
     <R as ErrorType>::Error: Format,
 {
-    handshake(&mut *stream, random_generator).await?;
+    with_timeout(Duration::from_secs(15), handshake(&mut *stream, random_generator))
+        .await
+        .map_err(|TimeoutError| {
+            error!("ws: handshake timed out");
+            Timeout
+        })??;
     info!("ws: handshake ok");
 
     let mut buffer = [0u8; 2048];

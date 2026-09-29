@@ -9,8 +9,6 @@ use esp_radio::wifi::{Config, ControllerConfig, WifiController, sta::StationConf
 extern crate alloc;
 
 const SSID: &str = env!("SSID");
-const PASSWORD: &str = env!("PASS");
-const WIFI_TRANSMIT_POWER: &str = env!("WIFI_TRANSMIT_POWER");
 
 pub fn init(
     wifi: esp_hal::peripherals::WIFI<'static>,
@@ -19,10 +17,11 @@ pub fn init(
     Stack<'static>,
     Runner<'static, Interface<'static>>,
 ) {
+    let password = env!("PASS");
     let station_config = Config::Station(
         StationConfig::default()
             .with_ssid(SSID)
-            .with_password(PASSWORD.into()),
+            .with_password(password.into()),
     );
 
     let (mut controller, interfaces) = esp_radio::wifi::new(
@@ -31,12 +30,18 @@ pub fn init(
     )
     .expect("Failed to initialize Wi-Fi controller");
 
-    let max_tx_power_dbm: i8 = WIFI_TRANSMIT_POWER
+    let wifi_transmit_power = env!("WIFI_TRANSMIT_POWER");
+    let tx_power_dbm_range = 2..=20;
+    let configured_tx_power_dbm: i8 = wifi_transmit_power
         .parse()
         .expect("WIFI_TRANSMIT_POWER must be a valid integer");
+    assert!(
+        tx_power_dbm_range.contains(&configured_tx_power_dbm),
+        "WIFI_TRANSMIT_POWER must be between 2 and 20 dBm"
+    );
+    let tx_power_in_quarter_dbm = configured_tx_power_dbm * 4;
     controller
-        // NOTE: Power unit is 0.25dBm, range is [8, 84] corresponding to 2dBm - 20dBm.
-        .set_max_tx_power(max_tx_power_dbm * 4)
+        .set_max_tx_power(tx_power_in_quarter_dbm)
         .expect("Failed to set max TX power");
 
     let config = embassy_net::Config::dhcpv4(Default::default());

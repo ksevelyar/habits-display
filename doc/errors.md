@@ -8,7 +8,7 @@ Contexts are the device's public API. Their fallible functions return `Result<T,
 
 * `Config(&'static str)`: build-time misconfiguration, carries the offending setting name
 * `Network(&'static str)`: connection could not be established or was lost, carries the failed stage, e.g. `"tcp connection failed"`
-* `Timeout`: established connection went silent beyond the server ping interval, treated as dead
+* `Timeout`: no progress beyond our timeout limit, treated as dead
 
 ## Rules
 * Failure sites log the raw error and propagate the coarse `AppError` variant

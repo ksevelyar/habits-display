@@ -30,7 +30,7 @@
           DEFMT_LOG = "info,embassy_net=warn";
           TIMEZONE = "Europe/Moscow";
           # NOTE: Valid range: 2–20 dBm
-          WIFI_TRANSMIT_POWER = "16";
+          WIFI_TRANSMIT_POWER = "14";
 
           buildInputs = with pkgs; [
             (rust-bin.nightly.latest.default.override {

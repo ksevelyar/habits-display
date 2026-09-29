@@ -19,7 +19,6 @@ include!(concat!(env!("OUT_DIR"), "/timezone.rs"));
 use sntpc::{NtpContext, NtpTimestampGenerator, get_time};
 use sntpc_net_embassy::UdpSocketWrapper;
 
-const NTP_SERVER: &str = "pool.ntp.org";
 const MIN_VALID_EPOCH: u32 = 1_700_000_000;
 const USEC_IN_SEC: u64 = 1_000_000;
 
@@ -123,7 +122,8 @@ async fn sync_with_ntp(
     tx_meta: &mut [PacketMetadata; 16],
     tx_buffer: &mut [u8; 4096],
 ) -> Result<(), AppError> {
-    let ntp_addrs = match stack.dns_query(NTP_SERVER, DnsQueryType::A).await {
+    let ntp_server = "pool.ntp.org";
+    let ntp_addrs = match stack.dns_query(ntp_server, DnsQueryType::A).await {
         Ok(addrs) if !addrs.is_empty() => addrs,
         _ => {
             error!("time: DNS failed");

@@ -1,5 +1,9 @@
 # Habits Display
 
+## What it does
+
+On boot the device joins the Wi-Fi network, syncs time over NTP, and opens a WebSocket connection to the notifications server. It authenticates with a JWT, then receives task events as they arrive and renders the latest notification on the display: one word per line, scaled to fill the screen.
+
 ## Build & Flash
 ```
 nix develop
