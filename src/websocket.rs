@@ -8,6 +8,7 @@ use embassy_net::tcp::TcpSocket;
 use embassy_time::{Duration, TimeoutError, Timer, WithTimeout, with_timeout};
 use embedded_io_async::ErrorType;
 use embedded_io_async::{Read, Write};
+use embedded_tls::{Aes128GcmSha256, TlsConfig, TlsConnection, TlsContext, UnsecureProvider};
 use heapless::String;
 use rand_core::{CryptoRng, RngCore};
 
@@ -79,22 +80,26 @@ async fn resolve_host(
     }
 }
 
+async fn resolve_endpoint(
+    stack: Stack<'_>,
+) -> Result<((embassy_net::IpAddress, u16), &'static str, bool), AppError> {
+    let host_with_port = env!("NOTIFICATIONS_HOST");
+    let (hostname, port_string) = host_with_port
+        .split_once(':')
+        .unwrap_or((host_with_port, ""));
+    let use_tls = env!("USE_TLS") == "true";
+    let default_port = if use_tls { 443 } else { 80 };
+    let port: u16 = port_string.parse().ok().unwrap_or(default_port);
+    let address = resolve_host(stack, hostname).await?;
+
+    Ok(((address, port), hostname, use_tls))
+}
+
 async fn connect(
     stack: Stack<'_>,
     random_generator: &mut esp_hal::rng::Rng,
 ) -> Result<(), AppError> {
-    let host_with_port = env!("NOTIFICATIONS_HOST");
-    let mut segments = host_with_port.split(':');
-    let hostname = segments.next().unwrap_or(host_with_port);
-    let use_tls = env!("USE_TLS") == "true";
-    let default_port = if use_tls { 443 } else { 80 };
-    let port: u16 = segments
-        .next()
-        .and_then(|port_string| port_string.parse().ok())
-        .unwrap_or(default_port);
-
-    let address = resolve_host(stack, hostname).await?;
-    let endpoint = (address, port);
+    let (endpoint, hostname, use_tls) = resolve_endpoint(stack).await?;
 
     let mut tcp_read_buffer = [0u8; 4096];
     let mut tcp_write_buffer = [0u8; 1024];
@@ -115,36 +120,40 @@ async fn connect(
     info!("ws: connected");
 
     if use_tls {
-        use embedded_tls::{
-            Aes128GcmSha256, TlsConfig, TlsConnection, TlsContext, UnsecureProvider,
-        };
-
-        let mut tls_read_buffer = [0u8; 16640];
-        let mut tls_write_buffer = [0u8; 16384];
-        let config = TlsConfig::new().with_server_name(hostname);
-        let provider = UnsecureProvider::new::<Aes128GcmSha256>(RngCrypto(*random_generator));
-
-        let mut tls = TlsConnection::new(socket, &mut tls_read_buffer, &mut tls_write_buffer);
-        let handshake = async {
-            tls.open(TlsContext::new(&config, provider))
-                .await
-                .map_err(|e| {
-                    error!("wss: tls handshake: {}", e);
-                    Network("tls negotiation failed")
-                })
-        };
-        with_timeout(Duration::from_secs(15), handshake)
-            .await
-            .map_err(|TimeoutError| {
-                error!("ws: tls handshake timed out");
-                Timeout
-            })??;
-        info!("ws: tls established");
-
-        run_websocket_loop(&mut tls, random_generator).await
+        run_tls_websocket_loop(socket, random_generator, hostname).await
     } else {
         run_websocket_loop(&mut socket, random_generator).await
     }
+}
+
+async fn run_tls_websocket_loop(
+    socket: TcpSocket<'_>,
+    random_generator: &mut esp_hal::rng::Rng,
+    hostname: &'static str,
+) -> Result<(), AppError> {
+    let mut tls_read_buffer = [0u8; 16640];
+    let mut tls_write_buffer = [0u8; 16384];
+    let config = TlsConfig::new().with_server_name(hostname);
+    let provider = UnsecureProvider::new::<Aes128GcmSha256>(RngCrypto(*random_generator));
+
+    let mut tls = TlsConnection::new(socket, &mut tls_read_buffer, &mut tls_write_buffer);
+    let handshake = async {
+        tls.open(TlsContext::new(&config, provider))
+            .await
+            .map_err(|e| {
+                error!("wss: tls handshake: {}", e);
+                Network("tls negotiation failed")
+            })
+    };
+    with_timeout(Duration::from_secs(15), handshake)
+        .await
+        .map_err(|TimeoutError| {
+            error!("ws: tls handshake timed out");
+            Timeout
+        })??;
+    info!("ws: tls established");
+
+    run_websocket_loop(&mut tls, random_generator).await
 }
 
 async fn receive_frame<'a, R: Read + Write>(
