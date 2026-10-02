@@ -43,7 +43,7 @@ pub fn epoch_secs() -> Option<u32> {
     Some(base + delta)
 }
 
-fn local_time() -> jiff::Zoned {
+pub fn local_time() -> jiff::Zoned {
     let epoch_secs = epoch_secs().unwrap_or(0);
     let timestamp = jiff::Timestamp::new(i64::from(epoch_secs), 0).unwrap();
 

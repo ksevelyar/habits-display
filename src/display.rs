@@ -1,13 +1,14 @@
 use core::convert::Infallible;
 
 use defmt::error;
+use embassy_time::{Duration, with_timeout};
 use embedded_graphics::{
-    geometry::{Point, Size},
-    primitives::Rectangle,
     draw_target::DrawTarget,
+    geometry::{Point, Size},
     mono_font::{MonoTextStyle, ascii::FONT_10X20},
     pixelcolor::Rgb565,
     prelude::*,
+    primitives::Rectangle,
     text::{Alignment, Text, TextStyle},
 };
 use embedded_hal_bus::spi::ExclusiveDevice;
@@ -30,7 +31,31 @@ use crate::DISPLAY_CHANNEL;
 
 static BUF: StaticCell<[u8; 512]> = StaticCell::new();
 
+#[derive(Clone, Copy, PartialEq)]
+struct Theme {
+    background: Rgb565,
+    foreground: Rgb565,
+}
 
+const DAY_THEME: Theme = Theme {
+    background: Rgb565::new(16, 4, 20),
+    foreground: Rgb565::new(63, 63, 63),
+};
+
+const NIGHT_THEME: Theme = Theme {
+    background: Rgb565::new(0, 0, 0),
+    foreground: Rgb565::new(18, 12, 2),
+};
+
+fn select_theme() -> Theme {
+    let hour = crate::time::local_time().hour() as u8;
+    let (day_start_hour, night_start_hour) = (8, 17);
+    if (day_start_hour..night_start_hour).contains(&hour) {
+        DAY_THEME
+    } else {
+        NIGHT_THEME
+    }
+}
 
 struct ScaleView<'a, D>
 where
@@ -45,7 +70,11 @@ impl<D: DrawTarget<Color = Rgb565>> ScaleView<'_, D> {
         Point::new(point.x * self.scale as i32, point.y * self.scale as i32)
     }
 
-    fn scaled_pixels(origin: Point, scale: u32, color: Rgb565) -> impl Iterator<Item = Pixel<Rgb565>> {
+    fn scaled_pixels(
+        origin: Point,
+        scale: u32,
+        color: Rgb565,
+    ) -> impl Iterator<Item = Pixel<Rgb565>> {
         (0..scale * scale).map(move |offset| {
             Pixel(
                 origin + Point::new((offset % scale) as i32, (offset / scale) as i32),
@@ -117,23 +146,38 @@ pub async fn task(
         .init(&mut delay)
         .unwrap();
 
-    let midnight_commander_background = Rgb565::new(0, 0, 20);
-    let midnight_commander_foreground = Rgb565::new(31, 52, 9);
+    let mut theme = select_theme();
 
-    display.clear(midnight_commander_background).unwrap();
+    display.clear(theme.background).unwrap();
 
-    let style = MonoTextStyle::new(&FONT_10X20, midnight_commander_foreground);
-    let text_style = TextStyle::with_alignment(Alignment::Center);
+    let mut last_task: Option<heapless::String<256>> = None;
 
     loop {
-        let task = DISPLAY_CHANNEL.receive().await;
+        let phase_poll_interval = Duration::from_secs(60);
+        let incoming = with_timeout(phase_poll_interval, DISPLAY_CHANNEL.receive())
+            .await
+            .ok();
 
-        display.clear(midnight_commander_background).unwrap();
+        let next_theme = select_theme();
+        if incoming.is_none() && next_theme == theme {
+            continue;
+        }
+        theme = next_theme;
+
+        last_task = incoming.or(last_task);
+
+        let Some(task) = last_task.as_ref() else {
+            continue;
+        };
+
+        display.clear(theme.background).unwrap();
+
+        let style = MonoTextStyle::new(&FONT_10X20, theme.foreground);
+        let text_style = TextStyle::with_alignment(Alignment::Center);
 
         let mut lines: heapless::Vec<heapless::String<32>, 8> = heapless::Vec::new();
         for word in task.split(' ') {
-            let line: heapless::String<32> =
-                word.chars().filter(char::is_ascii_graphic).collect();
+            let line: heapless::String<32> = word.chars().filter(char::is_ascii_graphic).collect();
             if line.is_empty() {
                 continue;
             }
@@ -152,7 +196,10 @@ pub async fn task(
         let line_count = lines.len() as i32;
         let block_top = (240 - line_count * line_height) / 2;
 
-        let mut view = ScaleView { parent: &mut display, scale: 2 };
+        let mut view = ScaleView {
+            parent: &mut display,
+            scale: 2,
+        };
         for (index, line) in lines.iter().enumerate() {
             let baseline = (block_top + baseline_offset + index as i32 * line_height) / 2;
             if Text::with_text_style(line, Point::new(75, baseline), style, text_style)

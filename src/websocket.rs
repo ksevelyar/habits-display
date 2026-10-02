@@ -15,7 +15,6 @@ use crate::{AppError, DISPLAY_CHANNEL};
 
 use AppError::{Network, Timeout};
 
-
 #[derive(Clone, Copy)]
 struct RngCrypto(esp_hal::rng::Rng);
 
@@ -127,10 +126,12 @@ async fn connect(
 
         let mut tls = TlsConnection::new(socket, &mut tls_read_buffer, &mut tls_write_buffer);
         let handshake = async {
-            tls.open(TlsContext::new(&config, provider)).await.map_err(|e| {
-                error!("wss: tls handshake: {}", e);
-                Network("tls negotiation failed")
-            })
+            tls.open(TlsContext::new(&config, provider))
+                .await
+                .map_err(|e| {
+                    error!("wss: tls handshake: {}", e);
+                    Network("tls negotiation failed")
+                })
         };
         with_timeout(Duration::from_secs(15), handshake)
             .await
@@ -231,7 +232,10 @@ fn parse_notification(payload: &[u8]) -> Option<String<256>> {
 
     let task_name_raw = &message[value_start..value_start + end];
     let mut task_name = String::<256>::new();
-    for character in task_name_raw.chars().filter(|c| c.is_ascii_graphic() || *c == ' ') {
+    for character in task_name_raw
+        .chars()
+        .filter(|c| c.is_ascii_graphic() || *c == ' ')
+    {
         if task_name.push(character).is_err() {
             break;
         }
@@ -274,12 +278,15 @@ async fn run_websocket_loop<R: Read + Write>(
 where
     <R as ErrorType>::Error: Format,
 {
-    with_timeout(Duration::from_secs(15), handshake(&mut *stream, random_generator))
-        .await
-        .map_err(|TimeoutError| {
-            error!("ws: handshake timed out");
-            Timeout
-        })??;
+    with_timeout(
+        Duration::from_secs(15),
+        handshake(&mut *stream, random_generator),
+    )
+    .await
+    .map_err(|TimeoutError| {
+        error!("ws: handshake timed out");
+        Timeout
+    })??;
     info!("ws: handshake ok");
 
     let mut buffer = [0u8; 2048];
