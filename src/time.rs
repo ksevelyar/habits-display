@@ -25,12 +25,7 @@ const USEC_IN_SEC: u64 = 1_000_000;
 static EPOCH_BASE: AtomicU32 = AtomicU32::new(0);
 static INSTANT_BASE: AtomicU32 = AtomicU32::new(0);
 
-defmt::timestamp!(
-    "{=u8:02}:{=u8:02}:{=u8:02}",
-    { local_time().hour() as u8 },
-    { local_time().minute() as u8 },
-    { local_time().second() as u8 },
-);
+defmt::timestamp!("{}", FormattedClock(local_time()));
 
 pub fn epoch_secs() -> Option<u32> {
     let base = EPOCH_BASE.load(Ordering::Acquire);
@@ -48,6 +43,20 @@ pub fn local_time() -> jiff::Zoned {
     let timestamp = jiff::Timestamp::new(i64::from(epoch_secs), 0).unwrap();
 
     timestamp.to_zoned(crate::time::TIMEZONE)
+}
+
+struct FormattedClock(jiff::Zoned);
+
+impl defmt::Format for FormattedClock {
+    fn format(&self, formatter: defmt::Formatter) {
+        defmt::write!(
+            formatter,
+            "{=u8:02}:{=u8:02}:{=u8:02}",
+            self.0.hour() as u8,
+            self.0.minute() as u8,
+            self.0.second() as u8,
+        );
+    }
 }
 
 fn set_epoch(epoch_secs: u32) {

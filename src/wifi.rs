@@ -30,18 +30,11 @@ pub fn init(
     )
     .expect("Failed to initialize Wi-Fi controller");
 
-    let wifi_transmit_power = env!("WIFI_TRANSMIT_POWER");
-    let tx_power_dbm_range = 2..=20;
-    let configured_tx_power_dbm: i8 = wifi_transmit_power
+    let configured_tx_power_dbm: i8 = env!("WIFI_TRANSMIT_POWER")
         .parse()
         .expect("WIFI_TRANSMIT_POWER must be a valid integer");
-    assert!(
-        tx_power_dbm_range.contains(&configured_tx_power_dbm),
-        "WIFI_TRANSMIT_POWER must be between 2 and 20 dBm"
-    );
-    let tx_power_in_quarter_dbm = configured_tx_power_dbm * 4;
     controller
-        .set_max_tx_power(tx_power_in_quarter_dbm)
+        .set_max_tx_power(configured_tx_power_dbm * 4)
         .expect("Failed to set max TX power");
 
     let config = embassy_net::Config::dhcpv4(Default::default());
