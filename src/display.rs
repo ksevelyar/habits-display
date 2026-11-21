@@ -70,12 +70,16 @@ impl DisplayState {
         }
     }
 
-    fn update(&mut self, hour: u8, notification: Option<heapless::String<256>>) -> bool {
+    fn update(&mut self, hour: u8, notification: Option<&str>) -> bool {
         let next_theme = select_theme(hour);
         let changed = notification.is_some() || next_theme != self.theme;
         self.theme = next_theme;
         if let Some(notification) = notification {
-            self.notification = Some(notification);
+            let stored_notification = self.notification.get_or_insert_with(heapless::String::new);
+            stored_notification.clear();
+            stored_notification
+                .push_str(notification)
+                .expect("notification fits its original capacity");
         }
         changed && self.notification.is_some()
     }
@@ -215,13 +219,76 @@ where
     run_display_with_observer(display, |_, _, _| {}).await;
 }
 
+fn render_notification<D: DrawTarget<Color = Rgb565>>(
+    display: &mut D,
+    notification: &str,
+    theme: Theme,
+) -> bool
+where
+    D::Error: core::fmt::Debug,
+{
+    let maximum_lines = 8;
+    let words = notification
+        .split(' ')
+        .filter(|word| word.chars().any(|character| character.is_ascii_graphic()));
+    let word_count = words.clone().count();
+    if word_count > maximum_lines {
+        error!("display: too many words");
+    }
+    let line_count = i32::try_from(word_count.min(maximum_lines)).expect("line count fits in i32");
+    if line_count == 0 {
+        return false;
+    }
+    let style = MonoTextStyle::new(&FONT_10X20, theme.foreground);
+    let text_style = TextStyle::with_alignment(Alignment::Center);
+    let line_height = 40;
+    let baseline_offset = 30;
+    let block_top = (240 - line_count * line_height) / 2;
+    let mut view = ScaleView {
+        parent: display,
+        scale: 2,
+    };
+    for (index, word) in words.take(maximum_lines).enumerate() {
+        let line: heapless::String<32> = word.chars().filter(char::is_ascii_graphic).collect();
+        let line_index = i32::try_from(index).expect("line index fits in i32");
+        let baseline = (block_top + baseline_offset + line_index * line_height) / 2;
+        Text::with_text_style(&line, Point::new(75, baseline), style, text_style)
+            .draw(&mut view)
+            .expect("draw notification");
+    }
+    true
+}
+
+async fn update_display_state(state: &mut DisplayState) -> bool {
+    let phase_poll_interval = Duration::from_secs(60);
+    match with_timeout(
+        phase_poll_interval,
+        select(
+            async {
+                let notification = DISPLAY_CHANNEL.receive().await;
+                let hour = crate::time::get_local_time().hour() as u8;
+                state.update(hour, Some(&notification))
+            },
+            crate::time::TIME_CHANGED.wait(),
+        ),
+    )
+    .await
+    {
+        Ok(Either::First(changed)) => changed,
+        Ok(Either::Second(())) | Err(_) => {
+            let hour = crate::time::get_local_time().hour() as u8;
+            state.update(hour, None)
+        }
+    }
+}
+
 pub async fn run_display_with_observer<D: DrawTarget<Color = Rgb565>>(
     display: &mut D,
     mut observe: impl FnMut(&str, Rgb565, Rgb565),
 ) where
     D::Error: core::fmt::Debug,
 {
-    let hour = crate::time::local_time().hour() as u8;
+    let hour = crate::time::get_local_time().hour() as u8;
     let mut state = DisplayState::new(hour);
 
     display
@@ -229,19 +296,7 @@ pub async fn run_display_with_observer<D: DrawTarget<Color = Rgb565>>(
         .expect("clear display");
 
     loop {
-        let phase_poll_interval = Duration::from_secs(60);
-        let incoming = match with_timeout(
-            phase_poll_interval,
-            select(DISPLAY_CHANNEL.receive(), crate::time::TIME_CHANGED.wait()),
-        )
-        .await
-        {
-            Ok(Either::First(notification)) => Some(notification),
-            Ok(Either::Second(())) | Err(_) => None,
-        };
-
-        let hour = crate::time::local_time().hour() as u8;
-        if !state.update(hour, incoming) {
+        if !update_display_state(&mut state).await {
             continue;
         }
 
@@ -253,41 +308,8 @@ pub async fn run_display_with_observer<D: DrawTarget<Color = Rgb565>>(
             .clear(state.theme().background)
             .expect("clear display");
 
-        let style = MonoTextStyle::new(&FONT_10X20, state.theme().foreground);
-        let text_style = TextStyle::with_alignment(Alignment::Center);
-
-        let mut lines: heapless::Vec<heapless::String<32>, 8> = heapless::Vec::new();
-        for word in task.split(' ') {
-            let line: heapless::String<32> = word.chars().filter(char::is_ascii_graphic).collect();
-            if line.is_empty() {
-                continue;
-            }
-            if lines.push(line).is_err() {
-                error!("display: too many words");
-                break;
-            }
+        if render_notification(display, task, state.theme()) {
+            observe(task, state.theme().background, state.theme().foreground);
         }
-
-        if lines.is_empty() {
-            continue;
-        }
-
-        let line_height = 40;
-        let baseline_offset = 30;
-        let line_count = i32::try_from(lines.len()).expect("line count fits in i32");
-        let block_top = (240 - line_count * line_height) / 2;
-
-        let mut view = ScaleView {
-            parent: display,
-            scale: 2,
-        };
-        for (index, line) in lines.iter().enumerate() {
-            let line_index = i32::try_from(index).expect("line index fits in i32");
-            let baseline = (block_top + baseline_offset + line_index * line_height) / 2;
-            Text::with_text_style(line, Point::new(75, baseline), style, text_style)
-                .draw(&mut view)
-                .expect("draw notification");
-        }
-        observe(task, state.theme().background, state.theme().foreground);
     }
 }

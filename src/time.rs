@@ -36,12 +36,12 @@ pub static TIME_CHANGED: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 defmt::timestamp!(
     "{}",
     LocalTime {
-        zoned: local_time(),
-        tenth_of_second: tenth_of_second(),
+        zoned: get_local_time(),
+        tenth_of_second: calculate_tenth_of_second(),
     }
 );
 
-pub fn epoch_secs() -> Option<u32> {
+pub fn get_epoch_seconds() -> Option<u32> {
     let base = EPOCH_BASE.load(Ordering::Acquire);
     if base == 0 {
         return None;
@@ -52,7 +52,7 @@ pub fn epoch_secs() -> Option<u32> {
     Some(base + delta)
 }
 
-fn tenth_of_second() -> u8 {
+fn calculate_tenth_of_second() -> u8 {
     if EPOCH_BASE.load(Ordering::Acquire) == 0 {
         return 0;
     }
@@ -62,9 +62,10 @@ fn tenth_of_second() -> u8 {
     (subsec_millis / 100) as u8
 }
 
-pub fn local_time() -> jiff::Zoned {
-    let epoch_secs = epoch_secs().unwrap_or(0);
-    let timestamp = jiff::Timestamp::new(i64::from(epoch_secs), 0).unwrap();
+pub fn get_local_time() -> jiff::Zoned {
+    let epoch_seconds = get_epoch_seconds().unwrap_or(0);
+    let timestamp = jiff::Timestamp::new(i64::from(epoch_seconds), 0)
+        .expect("epoch seconds fit in a timestamp");
 
     timestamp.to_zoned(crate::time::TIMEZONE)
 }
@@ -87,10 +88,10 @@ impl defmt::Format for LocalTime {
     }
 }
 
-fn set_epoch(epoch_secs: u32) {
+fn set_epoch(epoch_seconds: u32) {
     INSTANT_BASE.store(Instant::now().as_secs() as u32, Ordering::Relaxed);
     INSTANT_MILLIS_BASE.store(Instant::now().as_millis() as u32, Ordering::Relaxed);
-    EPOCH_BASE.store(epoch_secs, Ordering::Release);
+    EPOCH_BASE.store(epoch_seconds, Ordering::Release);
     TIME_CHANGED.signal(());
 }
 
@@ -99,7 +100,8 @@ pub fn seed_from_rtc(rtc: &Rtc) {
     let secs = (us / USEC_IN_SEC) as u32;
     if secs > MIN_VALID_EPOCH {
         set_epoch(secs);
-        let ts = Timestamp::new(i64::from(secs), 0).unwrap();
+        let ts = Timestamp::new(i64::from(secs), 0)
+            .expect("u32 epoch seconds are within Jiff's timestamp range");
         let z = ts.to_zoned(TIMEZONE);
         info!(
             "time: rtc seeded: {=str} {=i16}-{=i8:02}-{=i8:02} {=i8:02}:{=i8:02}:{=i8:02}",
@@ -122,8 +124,9 @@ fn log_sync(correction: Option<i64>) {
         info!("time: synced ({=i64}s)", corr);
     }
 
-    if let Some(epoch) = epoch_secs() {
-        let ts = Timestamp::new(i64::from(epoch), 0).unwrap();
+    if let Some(epoch) = get_epoch_seconds() {
+        let ts = Timestamp::new(i64::from(epoch), 0)
+            .expect("u32 epoch seconds are within Jiff's timestamp range");
         let z = ts.to_zoned(TIMEZONE);
         info!(
             "time: {=str} {=i16}-{=i8:02}-{=i8:02} {=i8:02}:{=i8:02}:{=i8:02}",
@@ -231,7 +234,7 @@ pub async fn run_time<Network: TimeNetwork>(
         .await;
         match result {
             Ok(epoch_us) => {
-                let old_epoch = epoch_secs();
+                let old_epoch = get_epoch_seconds();
                 let new_epoch = (epoch_us / USEC_IN_SEC) as u32;
                 let correction = old_epoch.map(|old| i64::from(new_epoch) - i64::from(old));
                 rtc.lock().await.set_current_time_us(epoch_us);

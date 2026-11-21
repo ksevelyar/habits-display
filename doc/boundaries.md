@@ -1,6 +1,7 @@
 ## Style
 * economy of complexity is main architecture goal
-* Prefer `expect` over `unwrap` to document invariants
+* `unwrap` is forbidden
+* `expect` must explain the invariant that makes error handling unnecessary
 * Use Rust edition 2024. `mod.rs` is forbidden
 
 ## Embedded

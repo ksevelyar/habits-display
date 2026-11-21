@@ -19,25 +19,8 @@ pub fn init(
 ) {
     static NETWORK_RESOURCES: static_cell::ConstStaticCell<StackResources<6>> =
         static_cell::ConstStaticCell::new(StackResources::new());
-    let password = env!("PASS");
-    let station_config = Config::Station(
-        StationConfig::default()
-            .with_ssid(SSID)
-            .with_password(password.into()),
-    );
-
-    let (mut controller, interfaces) = esp_radio::wifi::new(
-        wifi,
-        ControllerConfig::default().with_initial_config(station_config),
-    )
-    .expect("Failed to initialize Wi-Fi controller");
-
-    let configured_tx_power_dbm: i8 = env!("WIFI_TRANSMIT_POWER")
-        .parse()
-        .expect("WIFI_TRANSMIT_POWER must be a valid integer");
-    controller
-        .set_max_tx_power(configured_tx_power_dbm * 4)
-        .expect("Failed to set max TX power");
+    let (mut controller, interfaces) = initialize_controller(wifi);
+    configure_transmit_power(&mut controller);
 
     let config = embassy_net::Config::dhcpv4(embassy_net::DhcpConfig::default());
     let seed = u64::from(Rng::new().random()) << 32 | u64::from(Rng::new().random());
@@ -46,6 +29,35 @@ pub fn init(
         embassy_net::new(interfaces.station, config, NETWORK_RESOURCES.take(), seed);
 
     (controller, stack, runner)
+}
+
+fn initialize_controller(
+    wifi: esp_hal::peripherals::WIFI<'static>,
+) -> (
+    WifiController<'static>,
+    esp_radio::wifi::Interfaces<'static>,
+) {
+    let password = env!("PASS");
+    let station_config = Config::Station(
+        StationConfig::default()
+            .with_ssid(SSID)
+            .with_password(password.into()),
+    );
+    esp_radio::wifi::new(
+        wifi,
+        ControllerConfig::default().with_initial_config(station_config),
+    )
+    .expect("initialize Wi-Fi controller")
+}
+
+fn configure_transmit_power(controller: &mut WifiController<'static>) {
+    let transmit_power_decibel_milliwatts: i8 = env!("WIFI_TRANSMIT_POWER")
+        .parse()
+        .expect("WIFI_TRANSMIT_POWER must be a valid integer");
+    let quarter_decibels_per_decibel = 4;
+    controller
+        .set_max_tx_power(transmit_power_decibel_milliwatts * quarter_decibels_per_decibel)
+        .expect("set Wi-Fi transmit power");
 }
 
 pub trait WifiConnection {

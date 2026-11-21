@@ -28,7 +28,7 @@ async fn main(spawner: Spawner) -> ! {
     let sw_interrupt =
         esp_hal::interrupt::software::SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
     esp_rtos::start(timg0.timer0, sw_interrupt.software_interrupt0);
-    info!("Embassy initialized!");
+    info!("init: embassy initialized");
 
     let (controller, stack, runner) = wifi::init(peripherals.WIFI);
 

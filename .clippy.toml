@@ -1,1 +1,4 @@
-stack-size-threshold = 1024
+# NOTE: embedded-tls 0.19.0 stores large HKDF states in each TLS connection.
+# Switch back to 1024 when the upstream embassy-crypto port is released and reduces stack usage:
+# https://github.com/embassy-rs/embedded-tls/commit/a7d813d99fa217a326cdcdeed033fac4f36acd9e
+stack-size-threshold = 2048

@@ -11,6 +11,7 @@ use embedded_io_async::{Read, Write};
 use embedded_tls::{Aes128GcmSha256, TlsConfig, TlsConnection, TlsContext, UnsecureProvider};
 use heapless::String;
 use rand_core::{CryptoRng, RngCore};
+use static_cell::ConstStaticCell;
 
 use crate::{AppError, DISPLAY_CHANNEL};
 
@@ -41,12 +42,32 @@ impl CryptoRng for RngCrypto {}
 
 #[embassy_executor::task]
 pub async fn task(stack: Stack<'static>, mut random_generator: esp_hal::rng::Rng) -> ! {
+    static TCP_READ_BUFFER: ConstStaticCell<[u8; 4096]> = ConstStaticCell::new([0; 4096]);
+    static TCP_WRITE_BUFFER: ConstStaticCell<[u8; 1024]> = ConstStaticCell::new([0; 1024]);
+    static TLS_READ_BUFFER: ConstStaticCell<[u8; 16640]> = ConstStaticCell::new([0; 16640]);
+    static TLS_WRITE_BUFFER: ConstStaticCell<[u8; 16384]> = ConstStaticCell::new([0; 16384]);
+    static WEBSOCKET_BUFFER: ConstStaticCell<[u8; 2048]> = ConstStaticCell::new([0; 2048]);
+    let tcp_read_buffer = TCP_READ_BUFFER.take();
+    let tcp_write_buffer = TCP_WRITE_BUFFER.take();
+    let tls_read_buffer = TLS_READ_BUFFER.take();
+    let tls_write_buffer = TLS_WRITE_BUFFER.take();
+    let websocket_buffer = WEBSOCKET_BUFFER.take();
     let reconnect_delay = Duration::from_secs(10);
     stack.wait_config_up().await;
     info!("ws: network ready");
 
     loop {
-        if let Err(e) = connect(stack, &mut random_generator).await {
+        if let Err(e) = connect(
+            stack,
+            &mut random_generator,
+            tcp_read_buffer,
+            tcp_write_buffer,
+            tls_read_buffer,
+            tls_write_buffer,
+            websocket_buffer,
+        )
+        .await
+        {
             error!("ws: disconnected: {}", e);
         }
         Timer::after(reconnect_delay).await;
@@ -98,12 +119,15 @@ async fn resolve_endpoint(
 async fn connect(
     stack: Stack<'_>,
     random_generator: &mut esp_hal::rng::Rng,
+    tcp_read_buffer: &mut [u8],
+    tcp_write_buffer: &mut [u8],
+    tls_read_buffer: &mut [u8],
+    tls_write_buffer: &mut [u8],
+    websocket_buffer: &mut [u8; 2048],
 ) -> Result<(), AppError> {
     let (endpoint, hostname, use_tls) = resolve_endpoint(stack).await?;
 
-    let mut tcp_read_buffer = [0u8; 4096];
-    let mut tcp_write_buffer = [0u8; 1024];
-    let mut socket = TcpSocket::new(stack, &mut tcp_read_buffer, &mut tcp_write_buffer);
+    let mut socket = TcpSocket::new(stack, tcp_read_buffer, tcp_write_buffer);
 
     let connect = async {
         socket.connect(endpoint).await.map_err(|error| {
@@ -120,9 +144,17 @@ async fn connect(
     info!("ws: connected");
 
     if use_tls {
-        run_tls_websocket_loop(socket, random_generator, hostname).await
+        run_tls_websocket_loop(
+            socket,
+            random_generator,
+            hostname,
+            tls_read_buffer,
+            tls_write_buffer,
+            websocket_buffer,
+        )
+        .await
     } else {
-        run_websocket_loop(&mut socket, random_generator).await
+        run_websocket_loop(&mut socket, random_generator, websocket_buffer).await
     }
 }
 
@@ -130,18 +162,19 @@ async fn run_tls_websocket_loop(
     socket: TcpSocket<'_>,
     random_generator: &mut esp_hal::rng::Rng,
     hostname: &'static str,
+    tls_read_buffer: &mut [u8],
+    tls_write_buffer: &mut [u8],
+    websocket_buffer: &mut [u8; 2048],
 ) -> Result<(), AppError> {
-    let mut tls_read_buffer = [0u8; 16640];
-    let mut tls_write_buffer = [0u8; 16384];
     let config = TlsConfig::new().with_server_name(hostname);
     let provider = UnsecureProvider::new::<Aes128GcmSha256>(RngCrypto(*random_generator));
 
-    let mut tls = TlsConnection::new(socket, &mut tls_read_buffer, &mut tls_write_buffer);
+    let mut tls = TlsConnection::new(socket, tls_read_buffer, tls_write_buffer);
     let handshake = async {
         tls.open(TlsContext::new(&config, provider))
             .await
             .map_err(|e| {
-                error!("wss: tls handshake: {}", e);
+                error!("ws: tls handshake failed: {}", e);
                 Network("tls negotiation failed")
             })
     };
@@ -153,7 +186,7 @@ async fn run_tls_websocket_loop(
         })??;
     info!("ws: tls established");
 
-    run_websocket_loop(&mut tls, random_generator).await
+    run_websocket_loop(&mut tls, random_generator, websocket_buffer).await
 }
 
 async fn receive_frame<'a, R: Read + Write>(
@@ -197,10 +230,8 @@ where
 {
     match frame_type {
         FrameType::Text(_) | FrameType::Binary(_) => {
-            if let Some(task_name) = parse_notification(payload)
-                && let Err(msg) = DISPLAY_CHANNEL.try_send(task_name)
-            {
-                error!("ws: channel full: {}", msg);
+            if let Some(task_name) = parse_notification(payload) {
+                send_notification(task_name);
             }
             Ok(())
         }
@@ -229,7 +260,7 @@ where
     }
 }
 
-fn parse_notification(payload: &[u8]) -> Option<String<256>> {
+fn parse_notification(payload: &[u8]) -> Option<&str> {
     let Ok(message) = str::from_utf8(payload) else {
         return None;
     };
@@ -239,9 +270,12 @@ fn parse_notification(payload: &[u8]) -> Option<String<256>> {
     let value_start = start + prefix.len();
     let end = message[value_start..].find('"')?;
 
-    let task_name_raw = &message[value_start..value_start + end];
+    Some(&message[value_start..value_start + end])
+}
+
+fn send_notification(raw_task_name: &str) {
     let mut task_name = String::<256>::new();
-    for character in task_name_raw
+    for character in raw_task_name
         .chars()
         .filter(|c| c.is_ascii_graphic() || *c == ' ')
     {
@@ -251,7 +285,9 @@ fn parse_notification(payload: &[u8]) -> Option<String<256>> {
     }
 
     info!("ws: task: {}", task_name);
-    Some(task_name)
+    if DISPLAY_CHANNEL.try_send(task_name).is_err() {
+        error!("ws: channel full");
+    }
 }
 
 fn encode_websocket_key(input: &[u8; 16]) -> [u8; 24] {
@@ -283,13 +319,14 @@ fn encode_websocket_key(input: &[u8; 16]) -> [u8; 24] {
 pub async fn run_websocket_loop<R: Read + Write>(
     stream: &mut R,
     random_generator: &mut esp_hal::rng::Rng,
+    buffer: &mut [u8; 2048],
 ) -> Result<(), AppError>
 where
     <R as ErrorType>::Error: Format,
 {
     with_timeout(
         Duration::from_secs(15),
-        handshake(&mut *stream, random_generator),
+        handshake(&mut *stream, random_generator, &mut buffer[..512]),
     )
     .await
     .map_err(|TimeoutError| {
@@ -298,9 +335,8 @@ where
     })??;
     info!("ws: handshake ok");
 
-    let mut buffer = [0u8; 2048];
     loop {
-        let (frame_type, payload) = receive_frame(&mut *stream, &mut buffer).await?;
+        let (frame_type, payload) = receive_frame(&mut *stream, buffer).await?;
         handle_frame(&mut *stream, frame_type, payload).await?;
     }
 }
@@ -315,6 +351,7 @@ async fn write_request_data<R: Write>(stream: &mut R, data: &[u8]) -> Result<(),
 async fn handshake<R: Read + Write>(
     stream: &mut R,
     random_generator: &mut esp_hal::rng::Rng,
+    response_buffer: &mut [u8],
 ) -> Result<(), AppError>
 where
     <R as ErrorType>::Error: Format,
@@ -323,34 +360,31 @@ where
     random_generator.fill_bytes(&mut websocket_key);
     let websocket_key_base64 = encode_websocket_key(&websocket_key);
 
-    write_request_data(stream, b"GET /websocket/notifications HTTP/1.1\r\n").await?;
-    write_request_data(stream, b"Host: ").await?;
-    write_request_data(stream, env!("NOTIFICATIONS_HOST").as_bytes()).await?;
-    write_request_data(stream, b"\r\n").await?;
-    write_request_data(stream, b"Upgrade: websocket\r\n").await?;
-    write_request_data(stream, b"Connection: Upgrade\r\n").await?;
-    write_request_data(stream, b"Sec-WebSocket-Key: ").await?;
-    write_request_data(stream, &websocket_key_base64).await?;
-    write_request_data(stream, b"\r\n").await?;
-    write_request_data(stream, b"Sec-WebSocket-Version: 13\r\n").await?;
-    write_request_data(stream, b"Authorization: Bearer ").await?;
-    write_request_data(stream, env!("JWT_TOKEN").as_bytes()).await?;
-    write_request_data(stream, b"\r\n\r\n").await?;
+    let request_parts: &[&[u8]] = &[
+        b"GET /websocket/notifications HTTP/1.1\r\nHost: ",
+        env!("NOTIFICATIONS_HOST").as_bytes(),
+        b"\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ",
+        &websocket_key_base64,
+        b"\r\nSec-WebSocket-Version: 13\r\nAuthorization: Bearer ",
+        env!("JWT_TOKEN").as_bytes(),
+        b"\r\n\r\n",
+    ];
+    for part in request_parts {
+        write_request_data(stream, part).await?;
+    }
 
     stream
         .flush()
         .await
         .map_err(|_| Network("sending handshake request failed"))?;
     info!("ws: handshake sent");
-
-    read_handshake_response(stream).await
+    read_handshake_response(stream, response_buffer).await
 }
 
-async fn read_handshake_response<R: Read>(stream: &mut R) -> Result<(), AppError>
+async fn read_handshake_response<R: Read>(stream: &mut R, buffer: &mut [u8]) -> Result<(), AppError>
 where
     <R as ErrorType>::Error: Format,
 {
-    let mut buffer = [0u8; 512];
     let mut position = 0;
     loop {
         let bytes_read = stream

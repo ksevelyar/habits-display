@@ -2681,8 +2681,3 @@ name = "zeroize"
 version = "1.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "85ccff8a4805aba1eaa4cd4afcd49f7557dd2cf5fd79ffc37f8959466effc5aa"
-
-[[patch.unused]]
-name = "proc-macro-error2"
-version = "2.0.1"
-source = "git+https://github.com/fgardt/proc-macro-error-2?branch=fix%2Ffuture-incompat#53ff94b61c678593158db1a3d50269c6f0de0db7"

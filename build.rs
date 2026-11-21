@@ -11,7 +11,7 @@ fn main() {
     );
     println!("cargo:rerun-if-env-changed=WIFI_TRANSMIT_POWER");
 
-    let out = std::env::var("OUT_DIR").unwrap();
+    let out = std::env::var("OUT_DIR").expect("Cargo sets OUT_DIR for build scripts");
     std::fs::write(
         std::path::Path::new(&out).join("timezone.rs"),
         format!("pub const TIMEZONE: ::jiff::tz::TimeZone = ::jiff::tz::get!(\"{timezone}\");\n"),

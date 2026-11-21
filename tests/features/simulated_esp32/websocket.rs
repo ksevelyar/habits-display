@@ -98,7 +98,13 @@ pub async fn run_websocket_task() {
     super::wifi::WEBSOCKET_CONFIGURATION_READY.wait().await;
     let mut connection = Connection;
     let mut random_generator = esp_hal::rng::Rng::new();
-    habits_display::websocket::run_websocket_loop(&mut connection, &mut random_generator)
-        .await
-        .expect("WebSocket connection remains open");
+    static BUFFER: static_cell::ConstStaticCell<[u8; 2048]> =
+        static_cell::ConstStaticCell::new([0; 2048]);
+    habits_display::websocket::run_websocket_loop(
+        &mut connection,
+        &mut random_generator,
+        BUFFER.take(),
+    )
+    .await
+    .expect("WebSocket connection remains open");
 }
