@@ -1,6 +1,5 @@
-use core::convert::Infallible;
-
 use defmt::error;
+use embassy_futures::select::{Either, select};
 use embassy_time::{Duration, with_timeout};
 use embedded_graphics::{
     draw_target::DrawTarget,
@@ -16,10 +15,12 @@ use esp_hal::{
     Blocking,
     delay::Delay,
     gpio::{Level, Output, OutputConfig},
-    peripherals::GPIO7,
-    peripherals::GPIO8,
-    peripherals::GPIO9,
-    spi::master::Spi,
+    peripherals::{GPIO4, GPIO6, GPIO7, GPIO8, GPIO9, SPI2},
+    spi::{
+        Mode,
+        master::{Config, Spi},
+    },
+    time::Rate,
 };
 use mipidsi::{
     Builder, interface::SpiInterface, models::ST7789, options::ColorInversion,
@@ -31,7 +32,7 @@ use crate::DISPLAY_CHANNEL;
 
 static BUF: StaticCell<[u8; 512]> = StaticCell::new();
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct Theme {
     background: Rgb565,
     foreground: Rgb565,
@@ -47,13 +48,44 @@ const NIGHT_THEME: Theme = Theme {
     foreground: Rgb565::new(18, 12, 2),
 };
 
-fn select_theme() -> Theme {
-    let hour = crate::time::local_time().hour() as u8;
+fn select_theme(hour: u8) -> Theme {
     let (day_start_hour, night_start_hour) = (8, 17);
     if (day_start_hour..night_start_hour).contains(&hour) {
         DAY_THEME
     } else {
         NIGHT_THEME
+    }
+}
+
+struct DisplayState {
+    theme: Theme,
+    notification: Option<heapless::String<256>>,
+}
+
+impl DisplayState {
+    fn new(hour: u8) -> Self {
+        Self {
+            theme: select_theme(hour),
+            notification: None,
+        }
+    }
+
+    fn update(&mut self, hour: u8, notification: Option<heapless::String<256>>) -> bool {
+        let next_theme = select_theme(hour);
+        let changed = notification.is_some() || next_theme != self.theme;
+        self.theme = next_theme;
+        if let Some(notification) = notification {
+            self.notification = Some(notification);
+        }
+        changed && self.notification.is_some()
+    }
+
+    fn theme(&self) -> Theme {
+        self.theme
+    }
+
+    fn notification(&self) -> Option<&str> {
+        self.notification.as_deref()
     }
 }
 
@@ -67,7 +99,8 @@ where
 
 impl<D: DrawTarget<Color = Rgb565>> ScaleView<'_, D> {
     fn scaled_point(&self, point: Point) -> Point {
-        Point::new(point.x * self.scale as i32, point.y * self.scale as i32)
+        let scale = i32::try_from(self.scale).expect("display scale fits in i32");
+        Point::new(point.x * scale, point.y * scale)
     }
 
     fn scaled_pixels(
@@ -77,7 +110,11 @@ impl<D: DrawTarget<Color = Rgb565>> ScaleView<'_, D> {
     ) -> impl Iterator<Item = Pixel<Rgb565>> {
         (0..scale * scale).map(move |offset| {
             Pixel(
-                origin + Point::new((offset % scale) as i32, (offset / scale) as i32),
+                origin
+                    + Point::new(
+                        i32::try_from(offset % scale).expect("horizontal offset fits in i32"),
+                        i32::try_from(offset / scale).expect("vertical offset fits in i32"),
+                    ),
                 color,
             )
         })
@@ -86,7 +123,7 @@ impl<D: DrawTarget<Color = Rgb565>> ScaleView<'_, D> {
 
 impl<D: DrawTarget<Color = Rgb565>> DrawTarget for ScaleView<'_, D> {
     type Color = Rgb565;
-    type Error = Infallible;
+    type Error = D::Error;
 
     fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
     where
@@ -95,7 +132,7 @@ impl<D: DrawTarget<Color = Rgb565>> DrawTarget for ScaleView<'_, D> {
         for pixel in pixels {
             let origin = self.scaled_point(pixel.0);
             for scaled in Self::scaled_pixels(origin, self.scale, pixel.1) {
-                let _ = self.parent.draw_iter([scaled]);
+                self.parent.draw_iter([scaled])?;
             }
         }
         Ok(())
@@ -104,10 +141,8 @@ impl<D: DrawTarget<Color = Rgb565>> DrawTarget for ScaleView<'_, D> {
     fn fill_solid(&mut self, area: &Rectangle, color: Rgb565) -> Result<(), Self::Error> {
         let top_left = self.scaled_point(area.top_left);
         let scaled_size = Size::new(area.size.width * self.scale, area.size.height * self.scale);
-        let _ = self
-            .parent
-            .fill_solid(&Rectangle::new(top_left, scaled_size), color);
-        Ok(())
+        self.parent
+            .fill_solid(&Rectangle::new(top_left, scaled_size), color)
     }
 }
 
@@ -121,6 +156,22 @@ impl<D: DrawTarget<Color = Rgb565>> Dimensions for ScaleView<'_, D> {
     }
 }
 
+pub fn initialize_spi(
+    peripheral: SPI2<'static>,
+    clock: GPIO4<'static>,
+    data: GPIO6<'static>,
+) -> Spi<'static, Blocking> {
+    Spi::new(
+        peripheral,
+        Config::default()
+            .with_frequency(Rate::from_khz(40000))
+            .with_mode(Mode::_0),
+    )
+    .expect("initialize display SPI")
+    .with_sck(clock)
+    .with_mosi(data)
+}
+
 #[embassy_executor::task]
 pub async fn task(
     spi: Spi<'static, Blocking>,
@@ -128,6 +179,16 @@ pub async fn task(
     dc: GPIO8<'static>,
     rst: GPIO9<'static>,
 ) {
+    let mut display = initialize_display(spi, cs, dc, rst);
+    run_display(&mut display).await;
+}
+
+pub fn initialize_display(
+    spi: Spi<'static, Blocking>,
+    cs: GPIO7<'static>,
+    dc: GPIO8<'static>,
+    rst: GPIO9<'static>,
+) -> impl DrawTarget<Color = Rgb565, Error: core::fmt::Debug> {
     let mut delay = Delay::new();
 
     let cs = Output::new(cs, Level::High, OutputConfig::default());
@@ -138,41 +199,61 @@ pub async fn task(
     let device = ExclusiveDevice::new_no_delay(spi, cs).unwrap();
     let di = SpiInterface::new(device, dc, buf);
 
-    let mut display = Builder::new(ST7789, di)
+    Builder::new(ST7789, di)
         .reset_pin(rst)
         .display_size(240, 300)
         .orientation(Orientation::new().rotate(Rotation::Deg90))
         .invert_colors(ColorInversion::Inverted)
         .init(&mut delay)
-        .unwrap();
+        .expect("initialize display")
+}
 
-    let mut theme = select_theme();
+pub async fn run_display<D: DrawTarget<Color = Rgb565>>(display: &mut D)
+where
+    D::Error: core::fmt::Debug,
+{
+    run_display_with_observer(display, |_, _, _| {}).await;
+}
 
-    display.clear(theme.background).unwrap();
+pub async fn run_display_with_observer<D: DrawTarget<Color = Rgb565>>(
+    display: &mut D,
+    mut observe: impl FnMut(&str, Rgb565, Rgb565),
+) where
+    D::Error: core::fmt::Debug,
+{
+    let hour = crate::time::local_time().hour() as u8;
+    let mut state = DisplayState::new(hour);
 
-    let mut last_task: Option<heapless::String<256>> = None;
+    display
+        .clear(state.theme().background)
+        .expect("clear display");
 
     loop {
         let phase_poll_interval = Duration::from_secs(60);
-        let incoming = with_timeout(phase_poll_interval, DISPLAY_CHANNEL.receive())
-            .await
-            .ok();
+        let incoming = match with_timeout(
+            phase_poll_interval,
+            select(DISPLAY_CHANNEL.receive(), crate::time::TIME_CHANGED.wait()),
+        )
+        .await
+        {
+            Ok(Either::First(notification)) => Some(notification),
+            Ok(Either::Second(())) | Err(_) => None,
+        };
 
-        let next_theme = select_theme();
-        if incoming.is_none() && next_theme == theme {
+        let hour = crate::time::local_time().hour() as u8;
+        if !state.update(hour, incoming) {
             continue;
         }
-        theme = next_theme;
 
-        last_task = incoming.or(last_task);
-
-        let Some(task) = last_task.as_ref() else {
+        let Some(task) = state.notification() else {
             continue;
         };
 
-        display.clear(theme.background).unwrap();
+        display
+            .clear(state.theme().background)
+            .expect("clear display");
 
-        let style = MonoTextStyle::new(&FONT_10X20, theme.foreground);
+        let style = MonoTextStyle::new(&FONT_10X20, state.theme().foreground);
         let text_style = TextStyle::with_alignment(Alignment::Center);
 
         let mut lines: heapless::Vec<heapless::String<32>, 8> = heapless::Vec::new();
@@ -193,21 +274,20 @@ pub async fn task(
 
         let line_height = 40;
         let baseline_offset = 30;
-        let line_count = lines.len() as i32;
+        let line_count = i32::try_from(lines.len()).expect("line count fits in i32");
         let block_top = (240 - line_count * line_height) / 2;
 
         let mut view = ScaleView {
-            parent: &mut display,
+            parent: display,
             scale: 2,
         };
         for (index, line) in lines.iter().enumerate() {
-            let baseline = (block_top + baseline_offset + index as i32 * line_height) / 2;
-            if Text::with_text_style(line, Point::new(75, baseline), style, text_style)
+            let line_index = i32::try_from(index).expect("line index fits in i32");
+            let baseline = (block_top + baseline_offset + line_index * line_height) / 2;
+            Text::with_text_style(line, Point::new(75, baseline), style, text_style)
                 .draw(&mut view)
-                .is_err()
-            {
-                error!("display: draw failed");
-            }
+                .expect("draw notification");
         }
+        observe(task, state.theme().background, state.theme().foreground);
     }
 }

@@ -2,17 +2,7 @@
 #![no_main]
 
 use esp_alloc as _;
-use esp_hal::{
-    clock::CpuClock,
-    rng::Rng,
-    rtc_cntl::Rtc,
-    spi::{
-        Mode,
-        master::{Config, Spi},
-    },
-    time::Rate,
-    timer::timg::TimerGroup,
-};
+use esp_hal::{clock::CpuClock, rng::Rng, rtc_cntl::Rtc, timer::timg::TimerGroup};
 use habits_display::{display, time, websocket, wifi};
 use panic_rtt_target as _;
 
@@ -42,22 +32,10 @@ async fn main(spawner: Spawner) -> ! {
 
     let (controller, stack, runner) = wifi::init(peripherals.WIFI);
 
-    let sclk = peripherals.GPIO4;
-    let mosi = peripherals.GPIO6;
-
+    let spi = display::initialize_spi(peripherals.SPI2, peripherals.GPIO4, peripherals.GPIO6);
     let cs = peripherals.GPIO7;
     let dc = peripherals.GPIO8;
     let rst = peripherals.GPIO9;
-
-    let spi = Spi::new(
-        peripherals.SPI2,
-        Config::default()
-            .with_frequency(Rate::from_khz(40000))
-            .with_mode(Mode::_0),
-    )
-    .unwrap()
-    .with_sck(sclk)
-    .with_mosi(mosi);
 
     let rng = Rng::new();
 

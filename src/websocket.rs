@@ -280,7 +280,7 @@ fn encode_websocket_key(input: &[u8; 16]) -> [u8; 24] {
     output
 }
 
-async fn run_websocket_loop<R: Read + Write>(
+pub async fn run_websocket_loop<R: Read + Write>(
     stream: &mut R,
     random_generator: &mut esp_hal::rng::Rng,
 ) -> Result<(), AppError>
@@ -343,12 +343,18 @@ where
         .map_err(|_| Network("sending handshake request failed"))?;
     info!("ws: handshake sent");
 
+    read_handshake_response(stream).await
+}
+
+async fn read_handshake_response<R: Read>(stream: &mut R) -> Result<(), AppError>
+where
+    <R as ErrorType>::Error: Format,
+{
     let mut buffer = [0u8; 512];
     let mut position = 0;
-    let mut search_from = 0;
     loop {
         let bytes_read = stream
-            .read(&mut buffer[position..])
+            .read(&mut buffer[position..=position])
             .await
             .map_err(|error| {
                 error!("ws: handshake read: {}", error);
@@ -359,13 +365,9 @@ where
             return Err(Network("handshake response ended early"));
         }
         position += bytes_read;
-        if buffer[search_from..position]
-            .windows(4)
-            .any(|w| w == b"\r\n\r\n")
-        {
+        if buffer[..position].ends_with(b"\r\n\r\n") {
             break;
         }
-        search_from = position.saturating_sub(3);
         if position >= buffer.len() {
             error!("ws: handshake buf full");
             return Err(Network("handshake response exceeded buffer"));
