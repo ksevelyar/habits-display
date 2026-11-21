@@ -1,34 +1,22 @@
 # Habits Display
 
-## What it does
-
-On boot the device joins the Wi-Fi network, syncs time over NTP, and opens a WebSocket connection to the notifications server. It authenticates with a JWT, then receives task events as they arrive and renders the latest notification on the display: one word per line, scaled to fill the screen.
+A small desktop display that shows calendar notifications from habits-axum.
 
 ## Tests
+
 Tests require a connected MCU.
 
-```
+```sh
 nix develop
 cargo test
 ```
 
-## Build & Flash
-```
+## Build and flash
+
+```sh
 nix develop
 
 cargo run --release
-   Compiling habits-display v0.1.0 (/home/ksevelyar/code/habits-display)
-    Finished `release` profile [optimized + debuginfo] target(s) in 3.19s
-     Running `probe-rs run --chip=esp32c3 --preverify --always-print-stacktrace --no-location target/riscv32imc-unknown-none-elf/release/habits-display`
-      Erasing ✔ 100% [####################] 640.00 KiB @ 643.39 KiB/s (took 1s)
-  Programming ✔ 100% [####################] 328.90 KiB @  83.70 KiB/s (took 4s)           Finished in 5.73s
-[INFO ] Embassy initialized!
-[INFO ] starting wifi
-[INFO ] IPv4: DOWN
-[INFO ] start connection task
-[INFO ] About to connect...
-[INFO ] link_up = true
-[INFO ] IPv4: DOWN
 [INFO ] Connected to "fellowship-of-the-ring-2" (channel: 4)
 [INFO ] ws: network ready
 [INFO ] NTP: got IP
@@ -37,19 +25,5 @@ cargo run --release
 [INFO ] ws: handshake sent
 [INFO ] ws: handshake ok
 [INFO ] ws: {"event":"UserAuthenticated","user":{"email":"ksevelyar@gmail.com","id":1,"timezone":"Europe/Moscow"}}
-[INFO ] ws: ping
-[INFO ] ws: ping
-[INFO ] ws: task: debug 🐗 piglet
-[INFO ] ws: ping
-[INFO ] ws: ping
-[INFO ] ws: task: debug 🐗 piglet
-```
-
-## udev setup for ESP32-C3 with probe-rs
-
-```nix
-services.udev.extraRules = ''
-  # NOTE: esp32c3
-  SUBSYSTEM=="usb", ATTR{idVendor}=="303a", ATTR{idProduct}=="1001", MODE="0660", GROUP="dialout"
-'';
+[INFO ] ws: task: take a walk
 ```
